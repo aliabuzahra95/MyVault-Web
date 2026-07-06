@@ -3,20 +3,34 @@ info:
   # Do not change the title, if the title changes, the import paths will be broken
   title: Api
   version: 0.1.0
-  description: API specification
+  description: MyVault Web API — mirrors the Android app's data model
 servers:
   - url: /api
     description: Base API path
 tags:
   - name: health
     description: Health operations
+  - name: folders
+    description: Folder operations
+  - name: notes
+    description: Note operations
+  - name: tags
+    description: Tag operations
+  - name: attachments
+    description: Attachment / library operations
+  - name: search
+    description: Full-text search
+  - name: home
+    description: Home snapshot
+  - name: knowledgeTags
+    description: Knowledge tag operations
+
 paths:
   /healthz:
     get:
       operationId: healthCheck
       tags: [health]
       summary: Health check
-      description: Returns server health status
       responses:
         "200":
           description: Healthy
@@ -24,13 +38,747 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+
+  # ── Folders ─────────────────────────────────────────────────────────────────
+
+  /folders:
+    get:
+      operationId: listFolders
+      tags: [folders]
+      summary: List all folders (tree)
+      parameters:
+        - name: mode
+          in: query
+          schema:
+            type: string
+            enum: [study, library, all]
+          required: false
+        - name: workspace
+          in: query
+          schema:
+            type: string
+          required: false
+      responses:
+        "200":
+          description: Folder list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Folder"
+    post:
+      operationId: createFolder
+      tags: [folders]
+      summary: Create a folder
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FolderInput"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Folder"
+
+  /folders/{id}:
+    get:
+      operationId: getFolder
+      tags: [folders]
+      summary: Get a folder
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Folder
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Folder"
+        "404":
+          description: Not found
+    patch:
+      operationId: updateFolder
+      tags: [folders]
+      summary: Update a folder
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FolderUpdate"
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Folder"
+    delete:
+      operationId: deleteFolder
+      tags: [folders]
+      summary: Delete a folder (soft delete)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Deleted
+
+  # ── Notes ────────────────────────────────────────────────────────────────────
+
+  /notes:
+    get:
+      operationId: listNotes
+      tags: [notes]
+      summary: List notes
+      parameters:
+        - name: folderId
+          in: query
+          schema:
+            type: ["string", "null"]
+          required: false
+        - name: parentNoteId
+          in: query
+          schema:
+            type: ["string", "null"]
+          required: false
+        - name: isPinned
+          in: query
+          schema:
+            type: boolean
+          required: false
+        - name: workspace
+          in: query
+          schema:
+            type: string
+          required: false
+      responses:
+        "200":
+          description: Note list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Note"
+    post:
+      operationId: createNote
+      tags: [notes]
+      summary: Create a note
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NoteInput"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Note"
+
+  /notes/{id}:
+    get:
+      operationId: getNote
+      tags: [notes]
+      summary: Get a note with blocks
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Note with blocks
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NoteDetail"
+        "404":
+          description: Not found
+    patch:
+      operationId: updateNote
+      tags: [notes]
+      summary: Update a note
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NoteUpdate"
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Note"
+    delete:
+      operationId: deleteNote
+      tags: [notes]
+      summary: Delete a note (soft delete)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Deleted
+
+  /notes/{id}/blocks:
+    put:
+      operationId: replaceNoteBlocks
+      tags: [notes]
+      summary: Replace all blocks for a note
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BlocksInput"
+      responses:
+        "200":
+          description: Replaced blocks
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Block"
+
+  /notes/{id}/versions:
+    get:
+      operationId: listNoteVersions
+      tags: [notes]
+      summary: List note version history
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Versions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/NoteVersion"
+
+  /notes/{id}/tags:
+    get:
+      operationId: getNoteTagNames
+      tags: [notes]
+      summary: Get tag names for a note
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Tag names
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+    put:
+      operationId: setNoteTags
+      tags: [notes]
+      summary: Replace tags for a note
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TagNamesInput"
+      responses:
+        "200":
+          description: Updated tags
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+
+  # ── Tags ────────────────────────────────────────────────────────────────────
+
+  /tags:
+    get:
+      operationId: listTags
+      tags: [tags]
+      summary: List all tags
+      responses:
+        "200":
+          description: Tags
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Tag"
+
+  # ── Attachments / Library ───────────────────────────────────────────────────
+
+  /attachments:
+    get:
+      operationId: listAttachments
+      tags: [attachments]
+      summary: List attachments
+      parameters:
+        - name: libraryFolderId
+          in: query
+          schema:
+            type: ["string", "null"]
+          required: false
+        - name: noteId
+          in: query
+          schema:
+            type: ["string", "null"]
+          required: false
+        - name: isPinned
+          in: query
+          schema:
+            type: boolean
+          required: false
+      responses:
+        "200":
+          description: Attachments
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Attachment"
+
+  /attachments/{id}:
+    get:
+      operationId: getAttachment
+      tags: [attachments]
+      summary: Get an attachment
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Attachment
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Attachment"
+        "404":
+          description: Not found
+
+  # ── Search ──────────────────────────────────────────────────────────────────
+
+  /search:
+    get:
+      operationId: search
+      tags: [search]
+      summary: Full-text search across notes and attachments
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: workspace
+          in: query
+          schema:
+            type: string
+          required: false
+      responses:
+        "200":
+          description: Search results
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SearchResults"
+
+  # ── Home snapshot ────────────────────────────────────────────────────────────
+
+  /home/snapshot:
+    get:
+      operationId: getHomeSnapshot
+      tags: [home]
+      summary: Home dashboard — recent notes, pinned notes, workspace stats
+      parameters:
+        - name: workspace
+          in: query
+          schema:
+            type: string
+          required: false
+      responses:
+        "200":
+          description: Home snapshot
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HomeSnapshot"
+
+  # ── Knowledge Tags ───────────────────────────────────────────────────────────
+
+  /knowledge-tags:
+    get:
+      operationId: listKnowledgeTags
+      tags: [knowledgeTags]
+      summary: List knowledge tags
+      responses:
+        "200":
+          description: Knowledge tags
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/KnowledgeTag"
+    post:
+      operationId: createKnowledgeTag
+      tags: [knowledgeTags]
+      summary: Create a knowledge tag
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/KnowledgeTagInput"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KnowledgeTag"
+
+  /knowledge-tags/{id}/links:
+    get:
+      operationId: listKnowledgeTagLinks
+      tags: [knowledgeTags]
+      summary: Get all items linked to a knowledge tag
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Linked items
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/KnowledgeTagLink"
+
 components:
   schemas:
+
     HealthStatus:
       type: object
       properties:
         status:
           type: string
-      required:
-        - status
+      required: [status]
 
+    # ── Folder ──────────────────────────────────────────────────────────────
+
+    Folder:
+      type: object
+      required: [id, title, mode, createdAt, updatedAt]
+      properties:
+        id:          { type: string }
+        parentId:    { type: ["string", "null"] }
+        title:       { type: string }
+        description: { type: ["string", "null"] }
+        mode:
+          type: string
+          enum: [study, library]
+        workspace:   { type: ["string", "null"] }
+        orderIndex:  { type: integer }
+        noteCount:   { type: integer }
+        createdAt:   { type: integer }
+        updatedAt:   { type: integer }
+
+    FolderInput:
+      type: object
+      required: [title]
+      properties:
+        title:       { type: string, minLength: 1 }
+        parentId:    { type: ["string", "null"] }
+        description: { type: ["string", "null"] }
+        mode:
+          type: string
+          enum: [study, library]
+        workspace:   { type: ["string", "null"] }
+
+    FolderUpdate:
+      type: object
+      properties:
+        title:       { type: string, minLength: 1 }
+        description: { type: ["string", "null"] }
+        orderIndex:  { type: integer }
+
+    # ── Note ────────────────────────────────────────────────────────────────
+
+    Note:
+      type: object
+      required: [id, title, createdAt, updatedAt]
+      properties:
+        id:           { type: string }
+        folderId:     { type: ["string", "null"] }
+        parentNoteId: { type: ["string", "null"] }
+        title:        { type: string }
+        bodyPreview:  { type: ["string", "null"] }
+        wordCount:    { type: integer }
+        characterCount: { type: integer }
+        isPinned:     { type: boolean }
+        isFolderPinned: { type: boolean }
+        orderIndex:   { type: integer }
+        tagNames:
+          type: array
+          items:
+            type: string
+        createdAt:    { type: integer }
+        updatedAt:    { type: integer }
+
+    NoteDetail:
+      allOf:
+        - $ref: "#/components/schemas/Note"
+        - type: object
+          properties:
+            blocks:
+              type: array
+              items:
+                $ref: "#/components/schemas/Block"
+            richTextJson: { type: ["string", "null"] }
+
+    NoteInput:
+      type: object
+      required: [title]
+      properties:
+        title:        { type: string, minLength: 1 }
+        folderId:     { type: ["string", "null"] }
+        parentNoteId: { type: ["string", "null"] }
+        richTextJson: { type: ["string", "null"] }
+
+    NoteUpdate:
+      type: object
+      properties:
+        title:         { type: string, minLength: 1 }
+        richTextJson:  { type: ["string", "null"] }
+        isPinned:      { type: boolean }
+        isFolderPinned: { type: boolean }
+        orderIndex:    { type: integer }
+
+    # ── Block ────────────────────────────────────────────────────────────────
+
+    Block:
+      type: object
+      required: [id, noteId, type, content, orderIndex]
+      properties:
+        id:         { type: string }
+        noteId:     { type: string }
+        type:
+          type: string
+          enum: [paragraph, heading1, heading2, heading3, bullet, numbered, quote, divider, code]
+        content:    { type: string }
+        orderIndex: { type: integer }
+
+    BlocksInput:
+      type: object
+      required: [blocks]
+      properties:
+        blocks:
+          type: array
+          items:
+            type: object
+            required: [type, content, orderIndex]
+            properties:
+              type:       { type: string }
+              content:    { type: string }
+              orderIndex: { type: integer }
+
+    # ── NoteVersion ─────────────────────────────────────────────────────────
+
+    NoteVersion:
+      type: object
+      required: [id, noteId, title, createdAt]
+      properties:
+        id:             { type: string }
+        noteId:         { type: string }
+        title:          { type: string }
+        bodyPlainText:  { type: ["string", "null"] }
+        wordCount:      { type: integer }
+        characterCount: { type: integer }
+        createdAt:      { type: integer }
+
+    # ── Tag ─────────────────────────────────────────────────────────────────
+
+    Tag:
+      type: object
+      required: [name]
+      properties:
+        name:      { type: string }
+        noteCount: { type: integer }
+
+    TagNamesInput:
+      type: object
+      required: [tagNames]
+      properties:
+        tagNames:
+          type: array
+          items:
+            type: string
+
+    # ── Attachment ───────────────────────────────────────────────────────────
+
+    Attachment:
+      type: object
+      required: [id, name, mimeType, createdAt, updatedAt]
+      properties:
+        id:             { type: string }
+        noteId:         { type: ["string", "null"] }
+        libraryFolderId: { type: ["string", "null"] }
+        name:           { type: string }
+        mimeType:       { type: string }
+        sizeBytes:      { type: ["integer", "null"] }
+        isPinned:       { type: boolean }
+        readingProgressPercent: { type: ["number", "null"] }
+        createdAt:      { type: integer }
+        updatedAt:      { type: integer }
+
+    # ── Search ───────────────────────────────────────────────────────────────
+
+    SearchResultItem:
+      type: object
+      required: [type, id, title]
+      properties:
+        type:
+          type: string
+          enum: [note, attachment]
+        id:       { type: string }
+        title:    { type: string }
+        snippet:  { type: ["string", "null"] }
+        folderId: { type: ["string", "null"] }
+        folderTitle: { type: ["string", "null"] }
+        updatedAt: { type: integer }
+
+    SearchResults:
+      type: object
+      required: [query, items]
+      properties:
+        query: { type: string }
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/SearchResultItem"
+
+    # ── Home snapshot ────────────────────────────────────────────────────────
+
+    WorkspaceStats:
+      type: object
+      required: [totalNotes, totalFolders, totalAttachments]
+      properties:
+        totalNotes:       { type: integer }
+        totalFolders:     { type: integer }
+        totalAttachments: { type: integer }
+        totalTags:        { type: integer }
+        totalWordCount:   { type: integer }
+
+    HomeSnapshot:
+      type: object
+      required: [recentNotes, pinnedNotes, stats]
+      properties:
+        recentNotes:
+          type: array
+          items:
+            $ref: "#/components/schemas/Note"
+        pinnedNotes:
+          type: array
+          items:
+            $ref: "#/components/schemas/Note"
+        stats:
+          $ref: "#/components/schemas/WorkspaceStats"
+        recentFolders:
+          type: array
+          items:
+            $ref: "#/components/schemas/Folder"
+
+    # ── Knowledge tags ────────────────────────────────────────────────────────
+
+    KnowledgeTag:
+      type: object
+      required: [id, name, createdAt]
+      properties:
+        id:        { type: string }
+        name:      { type: string }
+        linkCount: { type: integer }
+        createdAt: { type: integer }
+
+    KnowledgeTagInput:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, minLength: 1 }
+
+    KnowledgeTagLink:
+      type: object
+      required: [tagId, targetType, targetId, createdAt]
+      properties:
+        tagId:      { type: string }
+        targetType:
+          type: string
+          enum: [note, attachment, annotation]
+        targetId:   { type: string }
+        createdAt:  { type: integer }
