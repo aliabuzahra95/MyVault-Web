@@ -24,7 +24,14 @@ export const islamicFolders: Folder[] = [
   { id: "if3", parentId: null, title: "Fiqh Notes", description: "Islamic jurisprudence notes", mode: "study", workspace: "islamic_corpus", orderIndex: 2, noteCount: 2, createdAt: d(50), updatedAt: d(14) },
 ];
 
-export const allFolders = [...personalFolders, ...islamicFolders];
+export const islamicLibraryFolders: Folder[] = [
+  { id: "il1", parentId: null, title: "Quran and Tafsir", description: "Tafsir, translations, and Quran reference works", mode: "library", workspace: "islamic_corpus", orderIndex: 0, noteCount: 0, createdAt: d(100), updatedAt: d(5) },
+  { id: "il1a", parentId: "il1", title: "Tafsir", description: "Classical and contemporary commentary", mode: "library", workspace: "islamic_corpus", orderIndex: 0, noteCount: 0, createdAt: d(90), updatedAt: d(7) },
+  { id: "il2", parentId: null, title: "Hadith", description: "Collections and commentary", mode: "library", workspace: "islamic_corpus", orderIndex: 1, noteCount: 0, createdAt: d(80), updatedAt: d(12) },
+  { id: "il3", parentId: null, title: "Fiqh", description: "Jurisprudence and legal principles", mode: "library", workspace: "islamic_corpus", orderIndex: 2, noteCount: 0, createdAt: d(60), updatedAt: d(20) },
+];
+
+export const allFolders = [...personalFolders, ...islamicFolders, ...islamicLibraryFolders];
 
 // ─── NOTES ───────────────────────────────────────────────────────────────────
 
@@ -74,7 +81,15 @@ export const noteDetails: Record<string, NoteDetail> = {
   },
   "in1": {
     ...islamicNotes[0],
-    richTextJson: null,
+    richTextJson: JSON.stringify({
+      text: "Overview\n\nTawakkul is not passivity but active trust after having taken the means.\n\nPractical Application\n\n• Make dua before beginning any task\n• Take the appropriate means with full effort\n• Release attachment to the outcome — it belongs to Allah",
+      styleMarks: [
+        { start: 0, end: 8, style: "Heading" },
+        { start: 10, end: 18, style: "Bold" },
+        { start: 84, end: 105, style: "Heading2" },
+      ],
+      noteLinks: [],
+    }),
     blocks: [
       { id: "ib1", noteId: "in1", type: "heading1", content: "Tawakkul — Complete Reliance on Allah", orderIndex: 0 },
       { id: "ib2", noteId: "in1", type: "paragraph", content: "Tawakkul is not passivity but active trust after having taken the means. The Prophet ﷺ famously said to the man who asked about tying his camel:", orderIndex: 1 },
@@ -113,11 +128,11 @@ export const tags: Tag[] = [
 // ─── ATTACHMENTS ──────────────────────────────────────────────────────────────
 
 export const attachments: Attachment[] = [
-  { id: "a1", noteId: null, libraryFolderId: "f4", name: "Attention Is All You Need.pdf", mimeType: "application/pdf", sizeBytes: 1245184, isPinned: true, readingProgressPercent: 78, createdAt: d(30), updatedAt: d(5) },
-  { id: "a2", noteId: null, libraryFolderId: "f4", name: "The Pragmatic Programmer.pdf", mimeType: "application/pdf", sizeBytes: 4300000, isPinned: false, readingProgressPercent: 34, createdAt: d(60), updatedAt: d(20) },
-  { id: "a3", noteId: null, libraryFolderId: "f4", name: "Clean Architecture.pdf", mimeType: "application/pdf", sizeBytes: 3100000, isPinned: false, readingProgressPercent: 0, createdAt: d(45), updatedAt: d(45) },
-  { id: "a4", noteId: "n9", libraryFolderId: null, name: "transformer_paper_notes.pdf", mimeType: "application/pdf", sizeBytes: 892000, isPinned: false, readingProgressPercent: 100, createdAt: d(25), updatedAt: d(10) },
-  { id: "a5", noteId: null, libraryFolderId: "f4", name: "Quran Tafsir Ibn Kathir Vol.1.pdf", mimeType: "application/pdf", sizeBytes: 8900000, isPinned: true, readingProgressPercent: 15, createdAt: d(90), updatedAt: d(7) },
+  { id: "a1", noteId: null, libraryFolderId: "il1a", name: "Quran Tafsir Ibn Kathir Vol.1.pdf", mimeType: "application/pdf", sizeBytes: 8900000, isPinned: true, readingProgressPercent: 15, createdAt: d(90), updatedAt: d(7) },
+  { id: "a2", noteId: null, libraryFolderId: "il2", name: "Forty Hadith An-Nawawi Commentary.pdf", mimeType: "application/pdf", sizeBytes: 4200000, isPinned: true, readingProgressPercent: 42, createdAt: d(60), updatedAt: d(12) },
+  { id: "a3", noteId: null, libraryFolderId: "il3", name: "Mukhtasar Al-Quduri Notes.pdf", mimeType: "application/pdf", sizeBytes: 3100000, isPinned: false, readingProgressPercent: 8, createdAt: d(45), updatedAt: d(20) },
+  { id: "a4", noteId: "in2", libraryFolderId: null, name: "Surah Al-Baqarah Reflection Pack.pdf", mimeType: "application/pdf", sizeBytes: 892000, isPinned: false, readingProgressPercent: 100, createdAt: d(25), updatedAt: d(10) },
+  { id: "a5", noteId: null, libraryFolderId: "il1", name: "Arabic Vocabulary Roots.pdf", mimeType: "application/pdf", sizeBytes: 1700000, isPinned: false, readingProgressPercent: 63, createdAt: d(30), updatedAt: d(5) },
 ];
 
 // ─── KNOWLEDGE TAGS ───────────────────────────────────────────────────────────

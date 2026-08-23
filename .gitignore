@@ -28,6 +28,7 @@ node_modules
 !.vscode/extensions.json
 
 # misc
+*.env.local
 /.sass-cache
 /connect.lock
 /coverage
@@ -47,3 +48,5 @@ Thumbs.db
 # Replit
 .cache/
 .local/
+.vercel
+.env*

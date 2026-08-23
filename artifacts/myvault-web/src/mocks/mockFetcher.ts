@@ -1,10 +1,17 @@
+import type { Attachment, Folder, HomeSnapshot, Note, SearchResults } from "@workspace/api-client-react";
+import { loadRestoredCorpus } from "@/lib/restore/restoredCorpus";
+import type { LocalPdfReaderState } from "@/lib/restore/localRestoreStore";
 import {
-  allFolders, allNotes, personalNotes, islamicNotes,
-  noteDetails, noteVersionsMap, tags, attachments,
-  knowledgeTags, knowledgeTagLinks, personalHomeSnapshot,
-  islamicHomeSnapshot, allSearchItems, allSearchItems as searchBase,
-} from "./data";
-import type { Folder, Note } from "@workspace/api-client-react";
+  deleteLocalCreatedFolder,
+  deleteLocalCreatedNote,
+  loadLocalCreatedAttachments,
+  loadLocalCreatedFolders,
+  loadLocalCreatedNotes,
+  loadLocalPdfReaderStates,
+  isLocallyDeleted,
+  saveLocalCreatedFolder,
+  saveLocalCreatedNote,
+} from "@/lib/restore/localRestoreStore";
 
 const originalFetch = window.fetch.bind(window);
 
@@ -35,12 +42,32 @@ function getSearchParams(url: string): URLSearchParams {
   return new URLSearchParams(idx >= 0 ? url.slice(idx + 1) : "");
 }
 
-// In-memory state layered on top of mock data
-const foldersStore: Folder[] = [...allFolders];
-const notesStore: Note[] = [...allNotes];
+const emptyHomeSnapshot: HomeSnapshot = {
+  recentNotes: [],
+  pinnedNotes: [],
+  recentFolders: [],
+  stats: {
+    totalNotes: 0,
+    totalFolders: 0,
+    totalAttachments: 0,
+    totalTags: 0,
+    totalWordCount: 0,
+  },
+};
+
+const emptySearchResults: SearchResults = { query: "", items: [] };
 
 let nextId = 9000;
-function uid(): string { return String(++nextId); }
+function uid(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) return `web-${crypto.randomUUID()}`;
+  return `web-${Date.now()}-${++nextId}`;
+}
+
+function mergeById<T extends { id: string }>(base: T[], local: T[]) {
+  const merged = new Map(base.map((item) => [item.id, item]));
+  local.forEach((item) => merged.set(item.id, item));
+  return [...merged.values()].filter((item) => !isLocallyDeleted(item));
+}
 
 export function installMockFetcher(): void {
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
@@ -53,7 +80,21 @@ export function installMockFetcher(): void {
       return originalFetch(input, init);
     }
 
-    const apiPath = path.replace(/^\/api/, "");
+    const apiPath = path.replace(/\?.*/, "").replace(/^\/api/, "");
+    const restoredCorpus = await loadRestoredCorpus().catch(() => null);
+    const [createdFolders, createdNotes, createdAttachments, readerStates]: [Folder[], Note[], Attachment[], LocalPdfReaderState[]] = await Promise.all([
+      loadLocalCreatedFolders().catch(() => [] as Folder[]),
+      loadLocalCreatedNotes().catch(() => [] as Note[]),
+      loadLocalCreatedAttachments().catch(() => [] as Attachment[]),
+      loadLocalPdfReaderStates().catch(() => [] as LocalPdfReaderState[]),
+    ]);
+    const readerStateByAttachment = new Map(readerStates.map((state) => [state.attachmentId, state]));
+    const applyReaderState = (attachment: Attachment) => {
+      const readerState = readerStateByAttachment.get(attachment.id);
+      return readerState
+        ? { ...attachment, readingProgressPercent: readerState.progressPercent, updatedAt: Math.max(attachment.updatedAt, readerState.updatedAt) }
+        : attachment;
+    };
 
     // ── Health ──────────────────────────────────────────────────────────────
     if (apiPath === "/healthz" && method === "GET") {
@@ -65,33 +106,35 @@ export function installMockFetcher(): void {
       const sp = getSearchParams(apiPath.includes("?") ? apiPath : url);
       const workspace = sp.get("workspace");
       const mode = sp.get("mode");
-      let result = foldersStore;
+      let result = mergeById(restoredCorpus?.folders ?? [], createdFolders);
       if (workspace) result = result.filter(f => f.workspace === workspace);
       if (mode && mode !== "all") result = result.filter(f => f.mode === mode);
       return jsonResponse(result);
     }
     if (apiPath === "/folders" && method === "POST") {
       const body = JSON.parse(init?.body as string ?? "{}");
-      const folder: Folder = { id: uid(), parentId: body.parentId ?? null, title: body.title, description: body.description ?? null, mode: body.mode ?? "study", workspace: body.workspace ?? null, orderIndex: foldersStore.length, noteCount: 0, createdAt: Date.now(), updatedAt: Date.now() };
-      foldersStore.push(folder);
+      const folder: Folder = { id: uid(), parentId: body.parentId ?? null, title: body.title, description: body.description ?? null, mode: body.mode ?? "study", workspace: body.workspace ?? null, orderIndex: (restoredCorpus?.folders.length ?? 0) + createdFolders.length, noteCount: 0, createdAt: Date.now(), updatedAt: Date.now() };
+      await saveLocalCreatedFolder(folder);
       return jsonResponse(folder, 201);
     }
     const folderById = matchPath(apiPath, "/folders/:id");
     if (folderById) {
       const { id } = folderById;
-      const idx = foldersStore.findIndex(f => f.id === id);
+      const folderSource = mergeById(restoredCorpus?.folders ?? [], createdFolders);
+      const idx = folderSource.findIndex(f => f.id === id);
       if (method === "GET") {
         if (idx < 0) return jsonResponse({ error: "Not found" }, 404);
-        return jsonResponse(foldersStore[idx]);
+        return jsonResponse(folderSource[idx]);
       }
       if (method === "PATCH") {
         if (idx < 0) return jsonResponse({ error: "Not found" }, 404);
         const body = JSON.parse(init?.body as string ?? "{}");
-        foldersStore[idx] = { ...foldersStore[idx], ...body, updatedAt: Date.now() };
-        return jsonResponse(foldersStore[idx]);
+        const updatedFolder = { ...folderSource[idx], ...body, updatedAt: Date.now() };
+        if (createdFolders.some((folder) => folder.id === id)) await saveLocalCreatedFolder(updatedFolder);
+        return jsonResponse(updatedFolder);
       }
       if (method === "DELETE") {
-        if (idx >= 0) foldersStore.splice(idx, 1);
+        await deleteLocalCreatedFolder(id);
         return new Response(null, { status: 204 });
       }
     }
@@ -101,36 +144,37 @@ export function installMockFetcher(): void {
       const sp = getSearchParams(url);
       const folderId = sp.get("folderId");
       const isPinned = sp.get("isPinned");
-      const workspace = sp.get("workspace");
-      let result = notesStore;
+      let result = mergeById(restoredCorpus?.notes ?? [], createdNotes);
       if (folderId) result = result.filter(n => n.folderId === folderId);
       if (isPinned === "true") result = result.filter(n => n.isPinned);
-      if (workspace === "islamic_corpus") result = result.filter(n => islamicNotes.some(i => i.id === n.id));
-      else if (workspace === "personal") result = result.filter(n => personalNotes.some(i => i.id === n.id));
       return jsonResponse(result);
     }
     if (apiPath === "/notes" && method === "POST") {
       const body = JSON.parse(init?.body as string ?? "{}");
-      const note: Note = { id: uid(), folderId: body.folderId ?? null, parentNoteId: body.parentNoteId ?? null, title: body.title, bodyPreview: null, wordCount: 0, characterCount: 0, isPinned: false, isFolderPinned: false, orderIndex: notesStore.length, tagNames: [], createdAt: Date.now(), updatedAt: Date.now() };
-      notesStore.push(note);
+      const note: Note = { id: uid(), folderId: body.folderId ?? null, parentNoteId: body.parentNoteId ?? null, title: body.title, bodyPreview: null, wordCount: 0, characterCount: 0, isPinned: false, isFolderPinned: false, orderIndex: (restoredCorpus?.notes.length ?? 0) + createdNotes.length, tagNames: [], createdAt: Date.now(), updatedAt: Date.now() };
+      await saveLocalCreatedNote(note);
       return jsonResponse(note, 201);
     }
     const noteVersions = matchPath(apiPath, "/notes/:id/versions");
     if (noteVersions && method === "GET") {
-      const versions = noteVersionsMap[noteVersions.id] ?? [];
+      const versions = restoredCorpus?.noteVersions[noteVersions.id] ?? [];
       return jsonResponse(versions);
     }
     const noteTagNames = matchPath(apiPath, "/notes/:id/tags");
     if (noteTagNames) {
+      const noteSource = mergeById(restoredCorpus?.notes ?? [], createdNotes);
       if (method === "GET") {
-        const note = notesStore.find(n => n.id === noteTagNames.id);
+        const note = noteSource.find(n => n.id === noteTagNames.id);
         return jsonResponse(note?.tagNames ?? []);
       }
       if (method === "PUT") {
         const body = JSON.parse(init?.body as string ?? "{}");
-        const idx = notesStore.findIndex(n => n.id === noteTagNames.id);
-        if (idx >= 0) notesStore[idx].tagNames = body.tagNames ?? [];
-        return jsonResponse(notesStore[idx]?.tagNames ?? []);
+        const note = noteSource.find(n => n.id === noteTagNames.id);
+        const tagNames = body.tagNames ?? [];
+        if (note && createdNotes.some((createdNote) => createdNote.id === note.id)) {
+          await saveLocalCreatedNote({ ...note, tagNames, updatedAt: Date.now() });
+        }
+        return jsonResponse(tagNames);
       }
     }
     const noteBlocks = matchPath(apiPath, "/notes/:id/blocks");
@@ -141,27 +185,30 @@ export function installMockFetcher(): void {
     const noteById = matchPath(apiPath, "/notes/:id");
     if (noteById) {
       const { id } = noteById;
-      const idx = notesStore.findIndex(n => n.id === id);
+      const noteSource = mergeById(restoredCorpus?.notes ?? [], createdNotes);
+      const idx = noteSource.findIndex(n => n.id === id);
       if (method === "GET") {
-        const detail = noteDetails[id] ?? notesStore[idx] ?? null;
+        const detail = restoredCorpus?.noteDetails[id] ?? noteSource[idx] ?? null;
         if (!detail) return jsonResponse({ error: "Not found" }, 404);
-        return jsonResponse({ ...detail, blocks: noteDetails[id]?.blocks ?? [] });
+        const blocks = restoredCorpus?.noteDetails[id]?.blocks ?? [];
+        return jsonResponse({ ...detail, blocks });
       }
       if (method === "PATCH") {
         if (idx < 0) return jsonResponse({ error: "Not found" }, 404);
         const body = JSON.parse(init?.body as string ?? "{}");
-        notesStore[idx] = { ...notesStore[idx], ...body, updatedAt: Date.now() };
-        return jsonResponse(notesStore[idx]);
+        const updatedNote = { ...noteSource[idx], ...body, updatedAt: Date.now() };
+        if (createdNotes.some((note) => note.id === id)) await saveLocalCreatedNote(updatedNote);
+        return jsonResponse(updatedNote);
       }
       if (method === "DELETE") {
-        if (idx >= 0) notesStore.splice(idx, 1);
+        await deleteLocalCreatedNote(id);
         return new Response(null, { status: 204 });
       }
     }
 
     // ── Tags ──────────────────────────────────────────────────────────────────
     if (apiPath === "/tags" && method === "GET") {
-      return jsonResponse(tags);
+      return jsonResponse(restoredCorpus?.tags ?? []);
     }
 
     // ── Attachments ───────────────────────────────────────────────────────────
@@ -170,7 +217,7 @@ export function installMockFetcher(): void {
       const libraryFolderId = sp.get("libraryFolderId");
       const noteId = sp.get("noteId");
       const isPinned = sp.get("isPinned");
-      let result = attachments;
+      let result = mergeById(restoredCorpus?.attachments ?? [], createdAttachments).map(applyReaderState);
       if (libraryFolderId) result = result.filter(a => a.libraryFolderId === libraryFolderId);
       if (noteId) result = result.filter(a => a.noteId === noteId);
       if (isPinned === "true") result = result.filter(a => a.isPinned);
@@ -178,7 +225,7 @@ export function installMockFetcher(): void {
     }
     const attachById = matchPath(apiPath, "/attachments/:id");
     if (attachById && method === "GET") {
-      const a = attachments.find(x => x.id === attachById.id);
+      const a = mergeById(restoredCorpus?.attachments ?? [], createdAttachments).map(applyReaderState).find(x => x.id === attachById.id);
       if (!a) return jsonResponse({ error: "Not found" }, 404);
       return jsonResponse(a);
     }
@@ -187,23 +234,40 @@ export function installMockFetcher(): void {
     if (apiPath === "/search" || apiPath.startsWith("/search?")) {
       const sp = getSearchParams(url);
       const q = (sp.get("q") ?? "").toLowerCase();
-      const workspace = sp.get("workspace");
-      let items = allSearchItems.items;
+      const folderNames = new Map(mergeById(restoredCorpus?.folders ?? [], createdFolders).map((folder) => [folder.id, folder.title]));
+      const localItems: SearchResults["items"] = [
+        ...createdNotes.map((note) => ({
+          type: "note" as const,
+          id: note.id,
+          title: note.title,
+          snippet: note.bodyPreview,
+          folderId: note.folderId,
+          folderTitle: note.folderId ? folderNames.get(note.folderId) ?? null : null,
+          updatedAt: note.updatedAt,
+        })),
+        ...createdAttachments.map((attachment) => ({
+          type: "attachment" as const,
+          id: attachment.id,
+          title: attachment.name,
+          snippet: attachment.mimeType,
+          folderId: attachment.libraryFolderId,
+          folderTitle: attachment.libraryFolderId ? folderNames.get(attachment.libraryFolderId) ?? null : null,
+          updatedAt: attachment.updatedAt,
+        })),
+      ];
+      let items = mergeById(restoredCorpus?.searchResults.items ?? emptySearchResults.items, localItems);
       if (q) items = items.filter(i => i.title.toLowerCase().includes(q) || (i.snippet ?? "").toLowerCase().includes(q));
-      if (workspace === "islamic_corpus") items = items.filter(i => islamicNotes.some(n => n.id === i.id) || (i.type === "attachment" && attachments.find(a => a.id === i.id)));
       return jsonResponse({ query: q, items });
     }
 
     // ── Home ──────────────────────────────────────────────────────────────────
     if (apiPath === "/home/snapshot" || apiPath.startsWith("/home/snapshot?")) {
-      const sp = getSearchParams(url);
-      const workspace = sp.get("workspace");
-      return jsonResponse(workspace === "islamic_corpus" ? islamicHomeSnapshot : personalHomeSnapshot);
+      return jsonResponse(restoredCorpus?.homeSnapshot ?? emptyHomeSnapshot);
     }
 
     // ── Knowledge Tags ────────────────────────────────────────────────────────
     if (apiPath === "/knowledge-tags" && method === "GET") {
-      return jsonResponse(knowledgeTags);
+      return jsonResponse(restoredCorpus?.knowledgeTags ?? []);
     }
     if (apiPath === "/knowledge-tags" && method === "POST") {
       const body = JSON.parse(init?.body as string ?? "{}");
@@ -211,7 +275,7 @@ export function installMockFetcher(): void {
     }
     const ktLinks = matchPath(apiPath, "/knowledge-tags/:id/links");
     if (ktLinks && method === "GET") {
-      return jsonResponse(knowledgeTagLinks[ktLinks.id] ?? []);
+      return jsonResponse(restoredCorpus?.knowledgeTagLinks[ktLinks.id] ?? []);
     }
 
     // Unknown API route

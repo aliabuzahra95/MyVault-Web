@@ -1,5 +1,14 @@
 import { useState } from "react";
-import { useListKnowledgeTags, useListKnowledgeTagLinks, useCreateKnowledgeTag, getListKnowledgeTagsQueryKey } from "@workspace/api-client-react";
+import {
+  getListKnowledgeTagsQueryKey,
+  useCreateKnowledgeTag,
+  useListAttachments,
+  useListKnowledgeTagLinks,
+  useListKnowledgeTags,
+  useListNotes,
+  type Attachment,
+  type Note,
+} from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -9,20 +18,27 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Network, FileText, BookOpen, Plus, ArrowLeft, Link2 } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
-import { allNotes, attachments } from "@/mocks/data";
 
-function LinkedItemRow({ link }: { link: { tagId: string; targetType: string; targetId: string; createdAt: number } }) {
+function LinkedItemRow({
+  link,
+  notes,
+  attachments,
+}: {
+  link: { tagId: string; targetType: string; targetId: string; createdAt: number };
+  notes: Note[];
+  attachments: Attachment[];
+}) {
   const [, navigate] = useLocation();
-  const note = link.targetType === "note" ? allNotes.find(n => n.id === link.targetId) : null;
+  const note = link.targetType === "note" ? notes.find(n => n.id === link.targetId) : null;
   const attachment = link.targetType === "attachment" ? attachments.find(a => a.id === link.targetId) : null;
   const item = note ?? attachment;
   if (!item) return null;
-  const title = note ? note.title : (attachment as any).name;
+  const title = note ? note.title : attachment!.name;
 
   return (
     <button
       data-testid={`kt-link-${link.targetId}`}
-      onClick={() => note ? navigate(`/notes/${note.id}`) : navigate("/library")}
+      onClick={() => note ? navigate(`/notes/${note.id}`) : navigate(`/library/document/${attachment?.id}`)}
       className="w-full text-left flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-muted transition-all group border border-transparent hover:border-border"
     >
       {link.targetType === "note"
@@ -40,13 +56,13 @@ function LinkedItemRow({ link }: { link: { tagId: string; targetType: string; ta
   );
 }
 
-function KnowledgeTagLinks({ tagId }: { tagId: string }) {
+function KnowledgeTagLinks({ tagId, notes, attachments }: { tagId: string; notes: Note[]; attachments: Attachment[] }) {
   const { data: links = [], isLoading } = useListKnowledgeTagLinks(tagId);
   if (isLoading) return <div className="space-y-2">{[...Array(2)].map((_, i) => <Skeleton key={i} className="h-14" />)}</div>;
   if (links.length === 0) return <p className="text-sm text-muted-foreground px-4">No linked items yet.</p>;
   return (
     <div className="space-y-0.5">
-      {links.map((link, i) => <LinkedItemRow key={i} link={link} />)}
+      {links.map((link, i) => <LinkedItemRow key={i} link={link} notes={notes} attachments={attachments} />)}
     </div>
   );
 }
@@ -58,6 +74,8 @@ export default function KnowledgeTagsPage() {
   const queryClient = useQueryClient();
 
   const { data: tags = [], isLoading } = useListKnowledgeTags();
+  const { data: notes = [] } = useListNotes();
+  const { data: attachments = [] } = useListAttachments();
   const createTag = useCreateKnowledgeTag({
     mutation: {
       onSuccess: () => {
@@ -85,7 +103,7 @@ export default function KnowledgeTagsPage() {
               {selectedTag.name}
             </div>
           </div>
-          <KnowledgeTagLinks tagId={selectedTag.id} />
+          <KnowledgeTagLinks tagId={selectedTag.id} notes={notes} attachments={attachments} />
         </>
       ) : (
         <>

@@ -106,7 +106,7 @@
   --foreground: 220 15% 13%;
   --border: 220 15% 88%;
   --input: 220 15% 88%;
-  --ring: 220 78% 62%;
+  --ring: 164 81% 31%;
 
   --card: 0 0% 100%;
   --card-foreground: 220 15% 13%;
@@ -116,7 +116,7 @@
   --popover-foreground: 220 15% 13%;
   --popover-border: 220 15% 88%;
 
-  --primary: 220 78% 62%;
+  --primary: 164 81% 31%;
   --primary-foreground: 0 0% 100%;
 
   --secondary: 220 18% 94%;
@@ -125,26 +125,26 @@
   --muted: 220 15% 94%;
   --muted-foreground: 220 10% 48%;
 
-  --accent: 220 78% 62%;
-  --accent-foreground: 0 0% 100%;
+  --accent: 164 30% 92%;
+  --accent-foreground: 164 55% 26%;
 
   --destructive: 0 84% 60%;
   --destructive-foreground: 0 0% 100%;
 
-  --chart-1: 220 78% 62%;
-  --chart-2: 160 60% 45%;
-  --chart-3: 30 80% 55%;
+  --chart-1: 164 81% 31%;
+  --chart-2: 40 79% 42%;
+  --chart-3: 199 57% 43%;
   --chart-4: 280 65% 60%;
   --chart-5: 340 75% 55%;
 
   --sidebar: 220 22% 96%;
   --sidebar-foreground: 220 15% 18%;
   --sidebar-border: 220 15% 90%;
-  --sidebar-primary: 220 78% 62%;
+  --sidebar-primary: 164 81% 31%;
   --sidebar-primary-foreground: 0 0% 100%;
   --sidebar-accent: 220 18% 91%;
   --sidebar-accent-foreground: 220 15% 18%;
-  --sidebar-ring: 220 78% 62%;
+  --sidebar-ring: 164 81% 31%;
 
   --app-font-sans: 'Inter', sans-serif;
   --app-font-serif: Georgia, serif;
@@ -179,55 +179,56 @@
 }
 
 .dark {
+  color-scheme: dark;
   --button-outline: rgba(255,255,255,.10);
   --badge-outline: rgba(255,255,255,.05);
   --opaque-button-border-intensity: 9;
   --elevate-1: rgba(255,255,255,.04);
   --elevate-2: rgba(255,255,255,.09);
 
-  --background: 220 16% 8%;
-  --foreground: 220 10% 88%;
-  --border: 220 14% 19%;
-  --input: 220 14% 19%;
-  --ring: 220 78% 62%;
+  --background: 150 7% 8%;
+  --foreground: 45 10% 92%;
+  --border: 150 5% 20%;
+  --input: 150 5% 20%;
+  --ring: 164 70% 42%;
 
-  --card: 220 16% 11%;
-  --card-foreground: 220 10% 88%;
-  --card-border: 220 14% 20%;
+  --card: 150 6% 11%;
+  --card-foreground: 45 10% 92%;
+  --card-border: 150 5% 20%;
 
-  --popover: 220 16% 11%;
-  --popover-foreground: 220 10% 88%;
-  --popover-border: 220 14% 22%;
+  --popover: 150 6% 11%;
+  --popover-foreground: 45 10% 92%;
+  --popover-border: 150 5% 22%;
 
-  --primary: 220 78% 62%;
-  --primary-foreground: 0 0% 100%;
+  --primary: 164 70% 42%;
+  --primary-foreground: 150 10% 8%;
 
-  --secondary: 220 14% 16%;
-  --secondary-foreground: 220 10% 78%;
+  --secondary: 150 5% 16%;
+  --secondary-foreground: 45 8% 82%;
 
-  --muted: 220 14% 16%;
-  --muted-foreground: 220 8% 48%;
+  --muted: 150 5% 16%;
+  --muted-foreground: 45 5% 62%;
 
-  --accent: 220 78% 62%;
-  --accent-foreground: 0 0% 100%;
+  --accent: 164 30% 20%;
+  --accent-foreground: 164 45% 86%;
 
   --destructive: 0 84% 60%;
   --destructive-foreground: 0 0% 100%;
 
-  --chart-1: 220 78% 62%;
-  --chart-2: 160 55% 50%;
-  --chart-3: 30 75% 58%;
+  --chart-1: 164 70% 42%;
+  --chart-2: 40 72% 50%;
+  --chart-3: 199 58% 55%;
   --chart-4: 280 60% 65%;
   --chart-5: 340 70% 58%;
 
-  --sidebar: 220 16% 9%;
-  --sidebar-foreground: 220 10% 80%;
-  --sidebar-border: 220 14% 17%;
-  --sidebar-primary: 220 78% 62%;
-  --sidebar-primary-foreground: 0 0% 100%;
-  --sidebar-accent: 220 14% 16%;
-  --sidebar-accent-foreground: 220 10% 80%;
-  --sidebar-ring: 220 78% 62%;
+  --sidebar: 150 7% 8%;
+  --sidebar-foreground: 45 8% 86%;
+  --sidebar-border: 150 5% 17%;
+  --sidebar-primary: 164 70% 42%;
+  --sidebar-primary-foreground: 150 10% 8%;
+  --sidebar-accent: 150 5% 16%;
+  --sidebar-accent-foreground: 45 8% 86%;
+  --sidebar-ring: 164 70% 42%;
 
   --shadow-2xs: 0 1px 2px rgba(0,0,0,.2);
   --shadow-xs: 0 1px 3px rgba(0,0,0,.3);
@@ -252,6 +253,64 @@
   --accent-border: hsl(from hsl(var(--accent)) h s calc(l + var(--opaque-button-border-intensity)) / alpha);
   --destructive-border: hsl(var(--destructive));
   --destructive-border: hsl(from hsl(var(--destructive)) h s calc(l + var(--opaque-button-border-intensity)) / alpha);
+}
+
+/* Legacy light utility bridge. New components should use semantic colour tokens. */
+.dark [class~="bg-white"] { background-color: hsl(var(--card)); }
+.dark [class~="bg-white/95"] { background-color: hsl(var(--card) / 0.95); }
+.dark [class~="bg-white/90"] { background-color: hsl(var(--card) / 0.90); }
+.dark [class~="bg-white/85"] { background-color: hsl(var(--card) / 0.85); }
+.dark [class~="bg-white/80"] { background-color: hsl(var(--card) / 0.80); }
+.dark [class~="bg-white/75"] { background-color: hsl(var(--card) / 0.75); }
+.dark [class~="bg-white/70"] { background-color: hsl(var(--card) / 0.70); }
+.dark [class~="bg-white/65"] { background-color: hsl(var(--card) / 0.65); }
+.dark [class~="bg-white/60"] { background-color: hsl(var(--card) / 0.60); }
+.dark [class~="bg-white/55"] { background-color: hsl(var(--card) / 0.55); }
+.dark [class~="bg-white/45"] { background-color: hsl(var(--card) / 0.45); }
+.dark [class~="hover:bg-white"]:hover { background-color: hsl(var(--card)); }
+.dark [class~="hover:bg-white/80"]:hover { background-color: hsl(var(--card) / 0.80); }
+.dark [class~="hover:bg-white/75"]:hover { background-color: hsl(var(--card) / 0.75); }
+.dark [class~="hover:bg-white/70"]:hover { background-color: hsl(var(--card) / 0.70); }
+.dark [class~="hover:bg-white/60"]:hover { background-color: hsl(var(--card) / 0.60); }
+.dark [class~="hover:bg-white/55"]:hover { background-color: hsl(var(--card) / 0.55); }
+
+.dark [class~="text-slate-950"],
+.dark [class~="text-slate-900"],
+.dark [class~="text-slate-800"] { color: hsl(var(--foreground)); }
+.dark [class~="text-slate-700"],
+.dark [class~="text-slate-600"] { color: hsl(var(--foreground) / 0.86); }
+.dark [class~="text-slate-500"],
+.dark [class~="text-slate-400"],
+.dark [class~="text-slate-300"] { color: hsl(var(--muted-foreground)); }
+.dark [class~="hover:text-slate-950"]:hover,
+.dark [class~="hover:text-slate-900"]:hover,
+.dark [class~="group-hover:text-slate-950"]:is(.group:hover *) { color: hsl(var(--foreground)); }
+
+.dark [class~="bg-slate-50/70"],
+.dark [class~="bg-slate-50/60"],
+.dark [class~="bg-slate-100/45"],
+.dark [class~="bg-slate-100"] { background-color: hsl(var(--muted)); }
+.dark [class~="bg-slate-200/70"],
+.dark [class~="bg-slate-200"] { background-color: hsl(var(--border)); }
+.dark [class~="hover:bg-slate-100"]:hover,
+.dark [class~="hover:bg-slate-200/70"]:hover { background-color: hsl(var(--muted)); }
+.dark [class~="border-slate-100"],
+.dark [class~="border-slate-200"],
+.dark [class~="border-slate-200/55"],
+.dark [class~="border-slate-200/60"] { border-color: hsl(var(--border)); }
+
+/* PDF canvases and loading paper remain white in both themes. */
+.dark [data-pdf-page] [class~="bg-white"] { background-color: #fff; }
+[data-testid="pdf-reader"] [data-pdf-page] canvas {
+  opacity: 1 !important;
+  filter: none !important;
+  mix-blend-mode: normal !important;
+}
+[data-testid="pdf-reader"] [data-pdf-page] .react-pdf__Page__textContent,
+[data-testid="pdf-reader"] [data-pdf-page] .textLayer,
+[data-testid="pdf-reader"] [data-pdf-page] .textLayer span,
+[data-testid="pdf-reader"] [data-pdf-page] .textLayer br {
+  color: transparent !important;
 }
 
 /* Global base */

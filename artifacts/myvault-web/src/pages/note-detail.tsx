@@ -1,309 +1,227 @@
-import { useParams, useLocation } from "wouter";
-import { useGetNote, useUpdateNote, useListNoteVersions, getGetNoteQueryKey, getListNoteVersionsQueryKey } from "@workspace/api-client-react";
-import type { Block } from "@workspace/api-client-react";
-import { useQueryClient } from "@tanstack/react-query";
-import { useState, useRef, useCallback, useEffect } from "react";
-import { Skeleton } from "@/components/ui/skeleton";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { cn } from "@/lib/utils";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useLocation, useParams } from "wouter";
 import {
-  ArrowLeft, Pin, PinOff, History, MoreHorizontal,
-  Heading1, Heading2, Heading3, List, ListOrdered,
-  Quote, Code, Minus, Type
-} from "lucide-react";
-import { formatDistanceToNow, format } from "date-fns";
+  getGetNoteQueryKey,
+  getListNoteVersionsQueryKey,
+  useGetNote,
+  useListNoteVersions,
+} from "@workspace/api-client-react";
+import { NoteWorkspace, type NoteSaveStatus } from "@/components/note/note-workspace";
+import { Skeleton } from "@/components/ui/skeleton";
+import {
+  loadLocalNoteDraft,
+  loadMetadataRestoreBundle,
+  reconcileLocalNoteDrafts,
+  saveLocalNoteDraft,
+  type LocalNoteDraft,
+} from "@/lib/restore/localRestoreStore";
+import {
+  normalizeVaultRichTextDocument,
+  type VaultRichTextDocument,
+} from "@/lib/restore/vaultRichText";
+import { recordRecentActivity } from "@/lib/recentActivity";
 
-type BlockType = Block["type"];
+const emptyDocument: VaultRichTextDocument = { text: "", styleMarks: [], noteLinks: [] };
 
-const BLOCK_LABELS: Record<BlockType, string> = {
-  paragraph: "Text",
-  heading1: "Heading 1",
-  heading2: "Heading 2",
-  heading3: "Heading 3",
-  bullet: "Bullet list",
-  numbered: "Numbered list",
-  quote: "Quote",
-  code: "Code",
-  divider: "Divider",
-};
-
-const BLOCK_ICONS: Record<BlockType, React.ElementType> = {
-  paragraph: Type,
-  heading1: Heading1,
-  heading2: Heading2,
-  heading3: Heading3,
-  bullet: List,
-  numbered: ListOrdered,
-  quote: Quote,
-  code: Code,
-  divider: Minus,
-};
-
-function BlockRenderer({ block, onChange, onEnter, onDelete }: {
-  block: Block;
-  onChange: (content: string) => void;
-  onEnter: () => void;
-  onDelete: () => void;
-}) {
-  const ref = useRef<HTMLTextAreaElement | HTMLDivElement>(null);
-  const cls = cn(
-    "w-full bg-transparent outline-none resize-none border-0 text-foreground placeholder:text-muted-foreground/50",
-    block.type === "heading1" && "text-2xl font-bold",
-    block.type === "heading2" && "text-xl font-semibold",
-    block.type === "heading3" && "text-lg font-medium",
-    block.type === "paragraph" && "text-base leading-relaxed",
-    block.type === "bullet" && "text-base leading-relaxed",
-    block.type === "numbered" && "text-base leading-relaxed",
-    block.type === "quote" && "text-base italic text-muted-foreground border-l-4 border-primary pl-4",
-    block.type === "code" && "font-mono text-sm bg-muted rounded-lg p-3 text-green-600 dark:text-green-400",
-  );
-
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      onEnter();
-    }
-    if (e.key === "Backspace" && block.content === "") {
-      e.preventDefault();
-      onDelete();
-    }
-  };
-
-  if (block.type === "divider") {
-    return <hr className="border-border my-2" />;
-  }
-
-  const prefix = block.type === "bullet" ? "• " : block.type === "numbered" ? `${block.orderIndex + 1}. ` : "";
-
-  return (
-    <div className="flex items-start gap-2">
-      {prefix && <span className="text-muted-foreground text-base pt-0.5 shrink-0 select-none">{prefix}</span>}
-      <textarea
-        ref={ref as React.RefObject<HTMLTextAreaElement>}
-        data-testid={`block-${block.id}`}
-        className={cn(cls, "flex-1 min-h-[1.5rem] overflow-hidden")}
-        value={block.content}
-        onChange={e => {
-          onChange(e.target.value);
-          e.target.style.height = "auto";
-          e.target.style.height = e.target.scrollHeight + "px";
-        }}
-        onKeyDown={handleKeyDown}
-        rows={1}
-        style={{ height: "auto" }}
-        placeholder={block.type === "paragraph" ? "Type something..." : BLOCK_LABELS[block.type]}
-      />
-    </div>
-  );
+function draftSignature(draft: LocalNoteDraft) {
+  return JSON.stringify({
+    title: draft.title,
+    richTextDocument: draft.richTextDocument,
+    isPinned: draft.isPinned,
+  });
 }
 
-let blockIdCounter = 50000;
-function newBlockId(): string { return `local-${++blockIdCounter}`; }
-
 export default function NoteDetailPage() {
-  const { id } = useParams<{ id: string }>();
+  const { id, courseId } = useParams<{ id: string; courseId?: string }>();
   const [, navigate] = useLocation();
-  const queryClient = useQueryClient();
-  const [showVersions, setShowVersions] = useState(false);
-  const [localBlocks, setLocalBlocks] = useState<Block[] | null>(null);
-  const [titleValue, setTitleValue] = useState("");
-  const [titleSaved, setTitleSaved] = useState(true);
+  const [document, setDocument] = useState<VaultRichTextDocument>(emptyDocument);
+  const [title, setTitle] = useState("");
+  const [isPinned, setIsPinned] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<NoteSaveStatus>("loading");
+  const [savedAt, setSavedAt] = useState<number | null>(null);
+  const [loadedNoteId, setLoadedNoteId] = useState<string | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const initializedNoteId = useRef<string | null>(null);
+  const editorReady = useRef(false);
+  const baseCloudVersion = useRef(0);
+  const baseUpdatedAt = useRef(0);
+  const latestDraft = useRef<LocalNoteDraft | null>(null);
+  const lastSavedSignature = useRef("");
+  const saveRevision = useRef(0);
 
   const { data: note, isLoading } = useGetNote(id!, {
     query: {
-      enabled: !!id,
+      enabled: Boolean(id),
       queryKey: getGetNoteQueryKey(id!),
     },
   });
 
   const { data: versions = [] } = useListNoteVersions(id!, {
-    query: { enabled: !!id && showVersions, queryKey: getListNoteVersionsQueryKey(id!) },
-  });
-
-  const updateNote = useUpdateNote({
-    mutation: {
-      onSuccess: () => {
-        queryClient.invalidateQueries({ queryKey: getGetNoteQueryKey(id!) });
-      },
+    query: {
+      enabled: Boolean(id),
+      queryKey: getListNoteVersionsQueryKey(id!),
     },
   });
 
   useEffect(() => {
-    if (note && localBlocks === null) {
-      setLocalBlocks((note as any).blocks ?? []);
-      setTitleValue(note.title);
-    }
-  }, [note]);
+    if (!note || !id || initializedNoteId.current === id) return;
+    initializedNoteId.current = id;
+    editorReady.current = false;
+    setLoadedNoteId(null);
+    setSaveStatus("loading");
+    let cancelled = false;
 
-  const handleTitleChange = (value: string) => {
-    setTitleValue(value);
-    setTitleSaved(false);
-    if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(() => {
-      updateNote.mutate({ id: id!, data: { title: value } });
-      setTitleSaved(true);
-    }, 800);
-  };
+    void loadMetadataRestoreBundle().then(async (bundle) => {
+      if (bundle) await reconcileLocalNoteDrafts(bundle);
+      return Promise.all([loadLocalNoteDraft(id), Promise.resolve(bundle)]);
+    }).then(([draft, bundle]) => {
+      if (cancelled) return;
 
-  const handleBlockChange = useCallback((blockId: string, content: string) => {
-    setLocalBlocks(prev => prev?.map(b => b.id === blockId ? { ...b, content } : b) ?? null);
-  }, []);
+      const sourceDocument = normalizeVaultRichTextDocument({
+        value: note.richTextJson,
+        blocks: note.blocks ?? [],
+        fallbackText: note.bodyPreview,
+      });
+      const draftDocument = draft?.mode === "rich_text" && draft.richTextDocument
+        ? draft.richTextDocument
+        : draft?.blocks.length
+          ? normalizeVaultRichTextDocument({ blocks: draft.blocks })
+          : sourceDocument;
 
-  const handleBlockEnter = useCallback((blockId: string) => {
-    setLocalBlocks(prev => {
-      if (!prev) return prev;
-      const idx = prev.findIndex(b => b.id === blockId);
-      const newBlock: Block = {
-        id: newBlockId(),
-        noteId: id!,
-        type: "paragraph",
-        content: "",
-        orderIndex: idx + 1,
+      baseCloudVersion.current = draft?.baseCloudVersion ?? bundle?.cloudVersion ?? 0;
+      baseUpdatedAt.current = draft?.baseUpdatedAt ?? note.updatedAt;
+      const initialDraft: LocalNoteDraft = {
+        schemaVersion: 1,
+        noteId: id,
+        baseCloudVersion: baseCloudVersion.current,
+        baseUpdatedAt: baseUpdatedAt.current,
+        title: draft?.title ?? note.title,
+        mode: "rich_text",
+        richTextDocument: draftDocument,
+        blocks: [],
+        isPinned: draft?.isPinned ?? Boolean(note.isPinned),
+        savedAt: draft?.savedAt ?? Date.now(),
+        pendingDriveSync: true,
       };
-      const updated = [...prev];
-      updated.splice(idx + 1, 0, newBlock);
-      return updated.map((b, i) => ({ ...b, orderIndex: i }));
+
+      setTitle(initialDraft.title);
+      setDocument(draftDocument);
+      setIsPinned(initialDraft.isPinned);
+      setSavedAt(draft?.savedAt ?? null);
+      latestDraft.current = initialDraft;
+      lastSavedSignature.current = draftSignature(initialDraft);
+      setSaveStatus(draft
+        ? bundle && bundle.cloudVersion !== draft.baseCloudVersion ? "conflict" : "saved"
+        : "available");
+      editorReady.current = true;
+      setLoadedNoteId(id);
+    }).catch(() => {
+      if (!cancelled) setSaveStatus("error");
     });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [id, note]);
+
+  useEffect(() => {
+    if (id && note && loadedNoteId === id) recordRecentActivity("note", id);
+  }, [id, loadedNoteId, note]);
+
+  const draft = useMemo<LocalNoteDraft | null>(() => {
+    if (!id || !note) return null;
+    return {
+      schemaVersion: 1,
+      noteId: id,
+      baseCloudVersion: baseCloudVersion.current,
+      baseUpdatedAt: baseUpdatedAt.current || note.updatedAt,
+      title,
+      mode: "rich_text",
+      richTextDocument: document,
+      blocks: [],
+      isPinned,
+      savedAt: savedAt ?? Date.now(),
+      pendingDriveSync: true,
+    };
+  }, [document, id, isPinned, note, savedAt, title]);
+
+  useEffect(() => {
+    if (!draft || !editorReady.current) return;
+    latestDraft.current = draft;
+    const signature = draftSignature(draft);
+    if (signature === lastSavedSignature.current) return;
+
+    setSaveStatus("saving");
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    const revision = ++saveRevision.current;
+    saveTimer.current = setTimeout(() => {
+      const timestamp = Date.now();
+      const savedDraft = { ...draft, savedAt: timestamp };
+      void saveLocalNoteDraft(savedDraft)
+        .then(() => {
+          if (revision !== saveRevision.current) return;
+          latestDraft.current = savedDraft;
+          lastSavedSignature.current = signature;
+          setSavedAt(timestamp);
+          setSaveStatus("saved");
+        })
+        .catch(() => {
+          if (revision === saveRevision.current) setSaveStatus("error");
+        });
+    }, 650);
+
+    return () => {
+      if (saveTimer.current) clearTimeout(saveTimer.current);
+    };
+  }, [draft]);
+
+  useEffect(() => () => {
+    const pendingDraft = latestDraft.current;
+    if (pendingDraft && draftSignature(pendingDraft) !== lastSavedSignature.current) {
+      void saveLocalNoteDraft({ ...pendingDraft, savedAt: Date.now() });
+    }
   }, [id]);
 
-  const handleBlockDelete = useCallback((blockId: string) => {
-    setLocalBlocks(prev => {
-      if (!prev || prev.length <= 1) return prev;
-      return prev.filter(b => b.id !== blockId).map((b, i) => ({ ...b, orderIndex: i }));
-    });
-  }, []);
-
-  const togglePin = () => {
-    if (!note) return;
-    updateNote.mutate({ id: id!, data: { isPinned: !note.isPinned } });
-  };
-
-  if (isLoading) {
+  if (isLoading || loadedNoteId !== id) {
     return (
-      <div className="p-6 max-w-3xl mx-auto space-y-4">
-        <Skeleton className="h-8 w-64" />
-        <Skeleton className="h-4 w-full" />
-        <Skeleton className="h-4 w-4/5" />
-        <Skeleton className="h-4 w-3/5" />
+      <div className="w-full max-w-[1240px] space-y-4 px-5 py-8 md:px-8 lg:px-10">
+        <Skeleton className="h-8 w-72" />
+        <Skeleton className="h-11 w-full" />
+        <Skeleton className="h-4 w-[min(760px,100%)]" />
+        <Skeleton className="h-4 w-[min(680px,90%)]" />
       </div>
     );
   }
 
-  if (!note) return null;
-  const blocks = localBlocks ?? [];
+  if (!note || !id) return null;
+
+  const handleBack = () => {
+    if (window.history.length > 1) {
+      window.history.back();
+      return;
+    }
+    if (courseId) {
+      navigate(`/courses/${courseId}`);
+      return;
+    }
+    navigate(note.folderId ? `/study?folder=${encodeURIComponent(note.folderId)}` : "/study");
+  };
 
   return (
-    <div className="flex flex-col h-full">
-      {/* Toolbar */}
-      <div className="sticky top-0 z-10 bg-background/95 backdrop-blur-sm border-b border-border px-6 py-2.5 flex items-center gap-2">
-        <button
-          data-testid="back-btn"
-          onClick={() => note.folderId ? navigate(`/folders/${note.folderId}`) : navigate("/folders")}
-          className="text-muted-foreground hover:text-foreground transition-colors mr-1"
-        >
-          <ArrowLeft className="w-4 h-4" />
-        </button>
-
-        <div className="flex-1 flex items-center gap-2 min-w-0">
-          {(note.tagNames ?? []).map(tag => (
-            <Badge key={tag} variant="secondary" className="text-xs shrink-0">{tag}</Badge>
-          ))}
-        </div>
-
-        <div className="flex items-center gap-1">
-          <span className="text-xs text-muted-foreground mr-2">
-            {titleSaved ? `Saved ${formatDistanceToNow(new Date(note.updatedAt), { addSuffix: true })}` : "Saving..."}
-          </span>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button variant="ghost" size="icon" className="h-7 w-7" onClick={togglePin} data-testid="pin-btn">
-                {note.isPinned ? <PinOff className="w-3.5 h-3.5" /> : <Pin className="w-3.5 h-3.5" />}
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>{note.isPinned ? "Unpin note" : "Pin note"}</TooltipContent>
-          </Tooltip>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setShowVersions(true)} data-testid="history-btn">
-                <History className="w-3.5 h-3.5" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>Version history</TooltipContent>
-          </Tooltip>
-        </div>
-      </div>
-
-      {/* Editor */}
-      <div className="flex-1 overflow-y-auto px-6 py-8 max-w-3xl mx-auto w-full">
-        {/* Title */}
-        <textarea
-          data-testid="note-title"
-          className="w-full text-3xl font-bold bg-transparent outline-none resize-none border-0 text-foreground placeholder:text-muted-foreground/40 mb-6 leading-tight"
-          value={titleValue}
-          onChange={e => {
-            handleTitleChange(e.target.value);
-            e.target.style.height = "auto";
-            e.target.style.height = e.target.scrollHeight + "px";
-          }}
-          placeholder="Untitled"
-          rows={1}
-          style={{ height: "auto" }}
-        />
-
-        {/* Blocks */}
-        <div className="space-y-1">
-          {blocks.map(block => (
-            <BlockRenderer
-              key={block.id}
-              block={block}
-              onChange={content => handleBlockChange(block.id, content)}
-              onEnter={() => handleBlockEnter(block.id)}
-              onDelete={() => handleBlockDelete(block.id)}
-            />
-          ))}
-          {blocks.length === 0 && (
-            <button
-              className="w-full text-left text-muted-foreground/50 text-base py-1 hover:text-muted-foreground transition-colors"
-              onClick={() => setLocalBlocks([{ id: newBlockId(), noteId: id!, type: "paragraph", content: "", orderIndex: 0 }])}
-            >
-              Start writing...
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* Footer */}
-      <div className="border-t border-border px-6 py-2 flex items-center justify-between text-xs text-muted-foreground bg-background">
-        <span data-testid="word-count">{note.wordCount} words · {note.characterCount} characters</span>
-        <span>{format(new Date(note.updatedAt), "MMM d, yyyy")}</span>
-      </div>
-
-      {/* Version history sheet */}
-      <Sheet open={showVersions} onOpenChange={setShowVersions}>
-        <SheetContent>
-          <SheetHeader>
-            <SheetTitle>Version History</SheetTitle>
-          </SheetHeader>
-          <div className="mt-4 space-y-2">
-            {versions.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No saved versions yet.</p>
-            ) : (
-              versions.map(v => (
-                <div key={v.id} className="border border-border rounded-lg p-3">
-                  <p className="text-sm font-medium text-foreground">{v.title}</p>
-                  <p className="text-xs text-muted-foreground mt-0.5">
-                    {format(new Date(v.createdAt), "MMM d, yyyy 'at' h:mm a")} · {v.wordCount} words
-                  </p>
-                </div>
-              ))
-            )}
-          </div>
-        </SheetContent>
-      </Sheet>
-    </div>
+    <NoteWorkspace
+      noteId={id}
+      title={title}
+      onTitleChange={setTitle}
+      document={document}
+      onDocumentChange={setDocument}
+      saveStatus={saveStatus}
+      savedAt={savedAt}
+      sourceUpdatedAt={note.updatedAt}
+      isPinned={isPinned}
+      onTogglePin={() => setIsPinned((current) => !current)}
+      onBack={handleBack}
+      tagNames={note.tagNames ?? []}
+      versions={versions}
+    />
   );
 }

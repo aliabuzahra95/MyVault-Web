@@ -1,7 +1,6 @@
-import { ThemeProvider } from "next-themes";
+import { ThemeProvider, useTheme } from "next-themes";
 import { createContext, useContext, useEffect, useState, ReactNode } from "react";
 
-// Workspace Context
 type Workspace = "personal" | "islamic_corpus";
 
 interface WorkspaceContextType {
@@ -12,10 +11,7 @@ interface WorkspaceContextType {
 const WorkspaceContext = createContext<WorkspaceContextType | undefined>(undefined);
 
 export function WorkspaceProvider({ children }: { children: ReactNode }) {
-  const [workspace, setWorkspaceState] = useState<Workspace>(() => {
-    const saved = localStorage.getItem("myvault-workspace");
-    return (saved as Workspace) || "personal";
-  });
+  const [workspace, setWorkspaceState] = useState<Workspace>("islamic_corpus");
 
   const setWorkspace = (ws: Workspace) => {
     setWorkspaceState(ws);
@@ -46,8 +42,9 @@ interface AccentContextType {
 const AccentContext = createContext<AccentContextType | undefined>(undefined);
 
 export function AccentProvider({ children }: { children: ReactNode }) {
+  const { resolvedTheme } = useTheme();
   const [accentColor, setAccentColorState] = useState(() => {
-    return localStorage.getItem("myvault-accent") || "#5B8DEF";
+    return localStorage.getItem("myvault-accent") || "#0F8F72";
   });
 
   const setAccentColor = (color: string) => {
@@ -83,8 +80,25 @@ export function AccentProvider({ children }: { children: ReactNode }) {
       }
       h /= 6;
     }
-    document.documentElement.style.setProperty("--primary", `${Math.round(h * 360)} ${Math.round(s * 100)}% ${Math.round(l * 100)}%`);
-  }, [accentColor]);
+    const hue = Math.round(h * 360);
+    const saturation = Math.round(s * 100);
+    const lightness = Math.round(l * 100);
+    const themeLightness = resolvedTheme === "dark" ? Math.max(lightness, 58) : lightness;
+    const primary = `${hue} ${saturation}% ${themeLightness}%`;
+    const accentSaturation = Math.min(Math.max(saturation, 24), 48);
+    const accent = resolvedTheme === "dark"
+      ? `${hue} ${accentSaturation}% 20%`
+      : `${hue} ${accentSaturation}% 93%`;
+    const accentForeground = resolvedTheme === "dark"
+      ? `${hue} ${Math.min(Math.max(saturation, 28), 58)}% 88%`
+      : `${hue} ${Math.min(Math.max(saturation, 30), 62)}% 27%`;
+    document.documentElement.style.setProperty("--primary", primary);
+    document.documentElement.style.setProperty("--ring", primary);
+    document.documentElement.style.setProperty("--accent", accent);
+    document.documentElement.style.setProperty("--accent-foreground", accentForeground);
+    document.documentElement.style.setProperty("--sidebar-primary", primary);
+    document.documentElement.style.setProperty("--sidebar-ring", primary);
+  }, [accentColor, resolvedTheme]);
 
   return (
     <AccentContext.Provider value={{ accentColor, setAccentColor }}>
