@@ -1,6 +1,6 @@
 import type { Attachment, Folder, Note } from "@workspace/api-client-react";
 import { buildMetadataRestoreBundle, type MetadataRestoreBundle } from "@/lib/restore/metadataRestore";
-import { metadataFiles } from "@/lib/restore/driveRestoreMap";
+import { androidMetadataFiles } from "@/lib/restore/driveRestoreMap";
 import type { DriveSyncManifest, DriveSyncManifestEntry } from "@/lib/restore/driveManifestPreview";
 import {
   loadLocalAttachmentBlob,
@@ -24,7 +24,12 @@ import {
   type LocalPdfAnnotationChange,
   type LocalPdfReaderState,
 } from "@/lib/restore/localRestoreStore";
-import { blocksToVaultRichText } from "@/lib/restore/vaultRichText";
+import {
+  blocksToVaultRichText,
+  inspectVaultRichTextEnvelope,
+  serializeVaultRichTextEnvelope,
+  type VaultRichTextEnvelope,
+} from "@/lib/restore/vaultRichText";
 
 type JsonRow = Record<string, unknown>;
 
@@ -87,7 +92,7 @@ export function createInitialMetadataRestoreBundle(now = Date.now()): MetadataRe
       accentColor: "#5B8DEF",
     }],
   ]);
-  const entries: DriveSyncManifestEntry[] = metadataFiles.map(({ fileName }) => ({
+  const entries: DriveSyncManifestEntry[] = androidMetadataFiles.map(({ fileName }) => ({
     path: `metadata/${fileName}`,
     fileName,
     backupEntry: fileName,
@@ -182,13 +187,19 @@ function richTextDocument(draft: LocalNoteDraft) {
   return draft.richTextDocument ?? blocksToVaultRichText(draft.blocks);
 }
 
-function richTextBlockRow(noteId: string, document: ReturnType<typeof richTextDocument>): JsonRow {
+function richTextBlockRow(
+  noteId: string,
+  document: ReturnType<typeof richTextDocument>,
+  original?: JsonRow,
+  envelope?: VaultRichTextEnvelope,
+): JsonRow {
   return {
-    id: `${noteId}-rich-text`,
+    ...original,
+    id: stringValue(original ?? {}, "id") || `${noteId}-rich-text`,
     noteId,
     type: "rich_text",
-    content: JSON.stringify(document),
-    orderIndex: 0,
+    content: serializeVaultRichTextEnvelope(document, envelope?.preservedFields),
+    orderIndex: typeof original?.orderIndex === "number" ? original.orderIndex : 0,
   };
 }
 
@@ -230,7 +241,6 @@ function courseRow(course: LocalCourse): JsonRow {
     lastOpenedNoteId: course.lastOpenedNoteId,
     createdAt: course.createdAt,
     updatedAt: course.updatedAt,
-    deletedAt: course.deletedAt ?? null,
   };
 }
 
@@ -407,7 +417,14 @@ export function buildSyncPreflight(bundle: MetadataRestoreBundle | null, pending
   });
 
   const originalCourses = rowsFor(bundle, "courses.json");
-  const coursePatches = pending.courses.map(courseRow);
+  const originalCourseIds = new Set(originalCourses.map((row) => stringValue(row, "id")));
+  const coursePatches = pending.courses.flatMap<JsonRow>((course) => {
+    if (!course.deletedAt) return [courseRow(course)];
+    if (originalCourseIds.has(course.id)) {
+      blockers.push(`Course “${course.title}” cannot be deleted safely because the current Android backup format has no course deletion marker.`);
+    }
+    return [];
+  });
   const courseRows = mergeRows(originalCourses, coursePatches);
   if (coursePatches.length) touch("courses.json", originalCourses, courseRows, coursePatches);
   const courseIds = new Set(courseRows.filter((row) => !rowIsDeleted(row)).map((row) => stringValue(row, "id")));
@@ -423,6 +440,8 @@ export function buildSyncPreflight(bundle: MetadataRestoreBundle | null, pending
   const createdNoteIds = new Set(activeCreatedNotes.map((note) => note.id));
   const noteIdsBeforeDrafts = new Set(mergedNotes.filter((row) => !rowIsDeleted(row)).map((row) => stringValue(row, "id")));
   const validDrafts: LocalNoteDraft[] = [];
+  const originalBlocks = rowsFor(bundle, "blocks.json");
+  const restoredRichTextByNoteId = new Map<string, { row: JsonRow; envelope: VaultRichTextEnvelope }>();
   const draftPatches = pending.noteDrafts.flatMap<JsonRow>((draft) => {
     if (!noteIdsBeforeDrafts.has(draft.noteId)) {
       blockers.push(`Edited note “${draft.title}” is missing from the restored metadata.`);
@@ -431,6 +450,20 @@ export function buildSyncPreflight(bundle: MetadataRestoreBundle | null, pending
     const restoredRow = originalNotes.find((row) => stringValue(row, "id") === draft.noteId);
     if (!createdNoteIds.has(draft.noteId) && restoredRow && typeof restoredRow.updatedAt === "number" && restoredRow.updatedAt !== draft.baseUpdatedAt) {
       blockers.push(`“${draft.title}” changed in the restored backup after the website edit began.`);
+    }
+    if (!createdNoteIds.has(draft.noteId)) {
+      const bodyRows = originalBlocks.filter((row) => (
+        stringValue(row, "noteId") === draft.noteId && ANDROID_BODY_BLOCK_TYPES.has(stringValue(row, "type"))
+      ));
+      const originalBody = bodyRows.length === 1 && stringValue(bodyRows[0], "type") === "rich_text" ? bodyRows[0] : null;
+      const envelope = originalBody && typeof originalBody.content === "string"
+        ? inspectVaultRichTextEnvelope(originalBody.content)
+        : null;
+      if (!originalBody || !envelope) {
+        blockers.push(`“${draft.title}” uses Android formatting that MyVault Web cannot safely round-trip yet. Its original content has been preserved.`);
+        return [];
+      }
+      restoredRichTextByNoteId.set(draft.noteId, { row: originalBody, envelope });
     }
     validDrafts.push(draft);
     const document = richTextDocument(draft);
@@ -464,10 +497,12 @@ export function buildSyncPreflight(bundle: MetadataRestoreBundle | null, pending
     }),
     ...validDrafts
       .filter((draft) => !createdNoteIds.has(draft.noteId))
-      .map((draft) => richTextBlockRow(draft.noteId, richTextDocument(draft))),
+      .map((draft) => {
+        const restored = restoredRichTextByNoteId.get(draft.noteId);
+        return richTextBlockRow(draft.noteId, richTextDocument(draft), restored?.row, restored?.envelope);
+      }),
   ];
   if (richTextBlockPatches.length) {
-    const originalBlocks = rowsFor(bundle, "blocks.json");
     const editedNoteIds = new Set(richTextBlockPatches.map((row) => stringValue(row, "noteId")));
     const blocksWithoutReplacedBodies = originalBlocks.filter((row) => {
       const noteId = stringValue(row, "noteId");
@@ -485,7 +520,9 @@ export function buildSyncPreflight(bundle: MetadataRestoreBundle | null, pending
 
   const originalAttachments = rowsFor(bundle, "attachments.json");
   const originalAttachmentIds = new Set(originalAttachments.map((row) => stringValue(row, "id")));
-  const attachmentPatches = pending.createdAttachments.map(attachmentRow);
+  const attachmentPatches = pending.createdAttachments.flatMap<JsonRow>((attachment) => (
+    localDeletedAt(attachment) && !originalAttachmentIds.has(attachment.id) ? [] : [attachmentRow(attachment)]
+  ));
   const mergedAttachments = mergeRows(originalAttachments, attachmentPatches);
   if (attachmentPatches.length) touch("attachments.json", originalAttachments, mergedAttachments, attachmentPatches);
   const attachmentIds = new Set(mergedAttachments.filter((row) => !rowIsDeleted(row)).map((row) => stringValue(row, "id")));
@@ -499,7 +536,9 @@ export function buildSyncPreflight(bundle: MetadataRestoreBundle | null, pending
   if (base.fileUploads.length) warnings.push(`${base.fileUploads.length} local PDF file${base.fileUploads.length === 1 ? "" : "s"} will be uploaded with its Android-compatible metadata.`);
 
   const originalProgress = rowsFor(bundle, "pdf_reading_progress.json");
+  const deletedProgressIds = new Set(pending.pdfReaderStates.filter((state) => localDeletedAt(state)).map((state) => state.attachmentId));
   const progressPatches = pending.pdfReaderStates.flatMap<JsonRow>((state) => {
+    if (localDeletedAt(state)) return [];
     if (!attachmentIds.has(state.attachmentId)) {
       blockers.push(`PDF reading progress refers to missing attachment ${state.attachmentId}.`);
       return [];
@@ -517,11 +556,19 @@ export function buildSyncPreflight(bundle: MetadataRestoreBundle | null, pending
       updatedAt: state.updatedAt,
     }];
   });
-  if (progressPatches.length) {
-    const progressWithIds = originalProgress.map((row) => ({ ...row, id: stringValue(row, "attachmentId") }));
+  if (progressPatches.length || deletedProgressIds.size) {
+    const progressWithoutDeletes = originalProgress.filter((row) => !deletedProgressIds.has(stringValue(row, "attachmentId")));
+    const progressWithIds = progressWithoutDeletes.map((row) => ({ ...row, id: stringValue(row, "attachmentId") }));
     const patchesWithIds = progressPatches.map((row) => ({ ...row, id: stringValue(row, "attachmentId") }));
     const merged = mergeRows(progressWithIds, patchesWithIds).map(({ id: _id, ...row }) => row);
-    touch("pdf_reading_progress.json", originalProgress, merged, progressPatches, 0, "attachmentId");
+    touch(
+      "pdf_reading_progress.json",
+      originalProgress,
+      merged,
+      progressPatches,
+      originalProgress.length - progressWithoutDeletes.length,
+      "attachmentId",
+    );
   }
 
   const originalAnnotations = rowsFor(bundle, "pdf_annotations.json");
@@ -550,15 +597,14 @@ export function buildSyncPreflight(bundle: MetadataRestoreBundle | null, pending
   }
 
   const originalStickyNotes = rowsFor(bundle, "folder_sticky_notes.json");
+  const originalStickyNoteIds = new Set(originalStickyNotes.map((row) => stringValue(row, "id")));
   const stickyPatches = pending.courseStickyNotes.flatMap<JsonRow>((stickyNote) => {
-    if (stickyNote.deletedAt) return [{
-      id: stickyNote.id,
-      folderId: stickyNote.folderId,
-      text: stickyNote.text,
-      createdAt: stickyNote.createdAt,
-      updatedAt: stickyNote.updatedAt,
-      deletedAt: stickyNote.deletedAt,
-    }];
+    if (stickyNote.deletedAt) {
+      if (originalStickyNoteIds.has(stickyNote.id)) {
+        blockers.push("A restored Course sticky note cannot be deleted safely because the current Android backup format has no sticky-note deletion marker.");
+      }
+      return [];
+    }
     if (!folderById.has(stickyNote.folderId)) {
       blockers.push(`Course sticky note has a missing folder (${stickyNote.folderId}).`);
       return [];
@@ -577,25 +623,19 @@ export function buildSyncPreflight(bundle: MetadataRestoreBundle | null, pending
       text: stickyNote.text,
       createdAt: stickyNote.createdAt,
       updatedAt: stickyNote.updatedAt,
-      deletedAt: null,
     }];
   });
   if (stickyPatches.length) touch("folder_sticky_notes.json", originalStickyNotes, mergeRows(originalStickyNotes, stickyPatches), stickyPatches);
 
   const originalConcepts = rowsFor(bundle, "course_concept_cards.json");
+  const originalConceptIds = new Set(originalConcepts.map((row) => stringValue(row, "id")));
   const conceptPatches = pending.courseConcepts.flatMap<JsonRow>((concept) => {
-    if (concept.deletedAt) return [{
-      id: concept.id,
-      courseId: concept.courseId,
-      term: concept.term,
-      arabicTerm: concept.arabicTerm,
-      definition: concept.definition,
-      details: concept.details,
-      sortOrder: concept.sortOrder,
-      createdAt: concept.createdAt,
-      updatedAt: concept.updatedAt,
-      deletedAt: concept.deletedAt,
-    }];
+    if (concept.deletedAt) {
+      if (originalConceptIds.has(concept.id)) {
+        blockers.push(`Course concept “${concept.term}” cannot be deleted safely because the current Android backup format has no concept-card deletion marker.`);
+      }
+      return [];
+    }
     if (!courseIds.has(concept.courseId)) {
       blockers.push(`Course concept “${concept.term}” has no matching restored course.`);
       return [];
@@ -614,7 +654,6 @@ export function buildSyncPreflight(bundle: MetadataRestoreBundle | null, pending
       sortOrder: concept.sortOrder,
       createdAt: concept.createdAt,
       updatedAt: concept.updatedAt,
-      deletedAt: null,
     }];
   });
   if (conceptPatches.length) touch("course_concept_cards.json", originalConcepts, mergeRows(originalConcepts, conceptPatches), conceptPatches);

@@ -102,6 +102,7 @@ type JsonRecord = Record<string, unknown>;
 const WORKSPACE = "islamic_corpus";
 const ISLAMIC_STUDY_MODE = "study";
 const ISLAMIC_LIBRARY_MODE = "library";
+const COURSE_MODE_PREFIX = "course:";
 const BLOCK_TYPES = new Set(["paragraph", "heading1", "heading2", "heading3", "bullet", "numbered", "quote", "divider", "code"]);
 
 function isRecord(value: unknown): value is JsonRecord {
@@ -180,9 +181,13 @@ function filterBundleRows(
  */
 export function projectIslamicCorpusBundle(bundle: MetadataRestoreBundle): MetadataRestoreBundle {
   const activeFolderRows = jsonArray(bundle, "folders.json").filter((row) => !isDeleted(row));
+  const activeCourseRows = jsonArray(bundle, "courses.json").filter((row) => !isDeleted(row));
+  const activeCourseIds = new Set(activeCourseRows.map((row) => stringValue(row, "id")).filter(Boolean));
   const visibleFolderRows = activeFolderRows.filter((row) => {
     const mode = stringValue(row, "mode", ISLAMIC_STUDY_MODE).toLowerCase();
-    return mode === ISLAMIC_STUDY_MODE || mode === ISLAMIC_LIBRARY_MODE;
+    if (mode === ISLAMIC_STUDY_MODE || mode === ISLAMIC_LIBRARY_MODE) return true;
+    if (!mode.startsWith(COURSE_MODE_PREFIX)) return false;
+    return activeCourseIds.has(mode.slice(COURSE_MODE_PREFIX.length));
   });
   const studyFolderIds = new Set(
     visibleFolderRows
@@ -196,12 +201,18 @@ export function projectIslamicCorpusBundle(bundle: MetadataRestoreBundle): Metad
       .map((row) => stringValue(row, "id"))
       .filter(Boolean),
   );
+  const courseFolderIds = new Set(
+    visibleFolderRows
+      .filter((row) => stringValue(row, "mode").toLowerCase().startsWith(COURSE_MODE_PREFIX))
+      .map((row) => stringValue(row, "id"))
+      .filter(Boolean),
+  );
 
   const visibleNoteRows = jsonArray(bundle, "notes.json").filter((row) => {
     if (isDeleted(row)) return false;
     const folderId = nullableString(row, "folderId");
     // Android keeps Personal root notes inside a Personal Inbox. A null folder is the Islamic Study root.
-    return folderId === null || studyFolderIds.has(folderId);
+    return folderId === null || studyFolderIds.has(folderId) || courseFolderIds.has(folderId);
   });
   const noteIds = new Set(visibleNoteRows.map((row) => stringValue(row, "id")).filter(Boolean));
 
@@ -219,10 +230,9 @@ export function projectIslamicCorpusBundle(bundle: MetadataRestoreBundle): Metad
     .filter((row) => attachmentIds.has(stringValueForKeys(row, ["attachmentId", "attachment_id"])));
   const annotationIds = new Set(visibleAnnotationRows.map((row) => stringValue(row, "id")).filter(Boolean));
 
-  const visibleCourseRows = jsonArray(bundle, "courses.json").filter((row) => {
-    if (isDeleted(row)) return false;
+  const visibleCourseRows = activeCourseRows.filter((row) => {
     const rootFolderId = nullableString(row, "rootFolderId");
-    return rootFolderId === null || studyFolderIds.has(rootFolderId);
+    return rootFolderId === null || courseFolderIds.has(rootFolderId);
   });
   const courseIds = new Set(visibleCourseRows.map((row) => stringValue(row, "id")).filter(Boolean));
   const legacyCourseFolderRows = jsonArray(bundle, "course_folders.json")
@@ -246,7 +256,10 @@ export function projectIslamicCorpusBundle(bundle: MetadataRestoreBundle): Metad
 
   const rows = new Map<string, JsonRecord[]>([
     ["folders.json", visibleFolderRows],
-    ["folder_sticky_notes.json", jsonArray(bundle, "folder_sticky_notes.json").filter((row) => studyFolderIds.has(stringValue(row, "folderId")))],
+    ["folder_sticky_notes.json", jsonArray(bundle, "folder_sticky_notes.json").filter((row) => {
+      const folderId = stringValue(row, "folderId");
+      return studyFolderIds.has(folderId) || courseFolderIds.has(folderId);
+    })],
     ["notes.json", visibleNoteRows],
     ["blocks.json", jsonArray(bundle, "blocks.json").filter((row) => noteIds.has(stringValue(row, "noteId")))],
     ["note_tables.json", jsonArray(bundle, "note_tables.json").filter((row) => noteIds.has(stringValue(row, "noteId")))],

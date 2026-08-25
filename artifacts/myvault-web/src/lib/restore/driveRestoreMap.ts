@@ -55,6 +55,11 @@ export const metadataFiles = [
   { fileName: "home_chat_history.json", group: "AI", required: false, purpose: "Ask MyVault home chat history." },
 ] as const;
 
+// Current Android backups write every group above except the three legacy AI
+// history files. Existing backups may still contain those files and the web
+// must preserve them, but a new web-first backup must not invent them.
+export const androidMetadataFiles = metadataFiles.filter(({ group }) => group !== "AI");
+
 export const restoreDataGroups = [
   {
     label: "Courses",

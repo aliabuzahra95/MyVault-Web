@@ -27,6 +27,7 @@ import { useRestoredCorpus } from "@/hooks/useRestoredCorpus";
 import { formatBytes } from "@/lib/restore/driveManifestPreview";
 import { clearLocalWorkspaceData } from "@/lib/restore/localRestoreStore";
 import { clearRecentActivity } from "@/lib/recentActivity";
+import { getActiveAccountId } from "@/lib/sync/accountContext";
 
 function formatBackupDate(value: string | number | null | undefined) {
   if (value == null) return "Not available";
@@ -51,6 +52,7 @@ export function GoogleDrivePanel() {
   const { corpus } = useRestoredCorpus();
   const [showSwitchConfirmation, setShowSwitchConfirmation] = useState(false);
   const [showDisconnectConfirmation, setShowDisconnectConfirmation] = useState(false);
+  const [showRestoreConfirmation, setShowRestoreConfirmation] = useState(false);
   const [isSwitching, setIsSwitching] = useState(false);
   const [isDisconnecting, setIsDisconnecting] = useState(false);
 
@@ -66,6 +68,8 @@ export function GoogleDrivePanel() {
   const accountName = profile?.displayName?.trim()
     || profile?.emailAddress?.split("@")[0]?.trim()
     || "Google Drive account";
+  const verifiedAccountLabel = profile?.emailAddress?.trim() || accountName;
+  const canConfirmRestore = Boolean(profile && drive.accountId);
 
   const restoredCounts = useMemo(() => {
     if (drive.metadataRestore) return drive.metadataRestore.counts;
@@ -85,9 +89,10 @@ export function GoogleDrivePanel() {
   async function switchAccount() {
     setIsSwitching(true);
     try {
+      const previousAccountId = getActiveAccountId();
       const token = await drive.chooseAnotherAccount();
       if (!token) return;
-      await clearLocalWorkspaceData();
+      await clearLocalWorkspaceData(previousAccountId);
       clearAccountSpecificPreferences();
       setShowSwitchConfirmation(false);
     } finally {
@@ -98,13 +103,19 @@ export function GoogleDrivePanel() {
   async function disconnect() {
     setIsDisconnecting(true);
     try {
+      const previousAccountId = getActiveAccountId();
       await drive.disconnect();
-      await clearLocalWorkspaceData();
+      await clearLocalWorkspaceData(previousAccountId);
       clearAccountSpecificPreferences();
       setShowDisconnectConfirmation(false);
     } finally {
       setIsDisconnecting(false);
     }
+  }
+
+  async function restoreConfirmedAccount() {
+    setShowRestoreConfirmation(false);
+    await drive.restoreMetadata();
   }
 
   return (
@@ -206,7 +217,7 @@ export function GoogleDrivePanel() {
                       </Button>
                     </>
                   ) : (
-                    <Button type="button" size="sm" onClick={() => void drive.restoreMetadata()} disabled={drive.isBusy}>
+                    <Button type="button" size="sm" onClick={() => setShowRestoreConfirmation(true)} disabled={drive.isBusy || !canConfirmRestore}>
                       {drive.isBusy ? <Loader2 className="animate-spin" /> : <RotateCcw />} Restore now
                     </Button>
                   )}
@@ -242,7 +253,7 @@ export function GoogleDrivePanel() {
                   <p className="text-sm font-semibold text-foreground">Restore from Google Drive</p>
                   <p className="mt-1 text-xs leading-5 text-muted-foreground">MyVault will find this account's latest Android backup and restore its courses, Study notes, and Library records.</p>
                 </div>
-                <Button type="button" size="sm" onClick={() => void drive.restoreMetadata()} disabled={drive.isBusy} data-testid="restore-from-google-drive">
+                <Button type="button" size="sm" onClick={() => setShowRestoreConfirmation(true)} disabled={drive.isBusy || !canConfirmRestore} data-testid="restore-from-google-drive">
                   {drive.isBusy ? <Loader2 className="animate-spin" /> : <RotateCcw />}
                   {drive.isBusy ? "Restoring" : "Restore from Drive"}
                 </Button>
@@ -251,6 +262,23 @@ export function GoogleDrivePanel() {
           </div>
         ) : null}
       </div>
+
+      <AlertDialog open={showRestoreConfirmation} onOpenChange={setShowRestoreConfirmation}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Restore from {verifiedAccountLabel}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              MyVault verified this Google account before reading its backup. The restored workspace in this browser will be replaced with this account&apos;s latest Android backup. Nothing in Google Drive will be changed.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={() => void restoreConfirmedAccount()} disabled={!canConfirmRestore}>
+              <RotateCcw /> Restore this account
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <AlertDialog open={showSwitchConfirmation} onOpenChange={setShowSwitchConfirmation}>
         <AlertDialogContent>

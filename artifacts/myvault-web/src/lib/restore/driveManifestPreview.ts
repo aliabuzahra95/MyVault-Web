@@ -3,6 +3,7 @@ import { driveManifest, metadataFiles, restoreDataGroups } from "@/lib/restore/d
 export type DriveSyncManifestEntryKind = "metadata" | "file";
 
 export type DriveSyncManifestEntry = {
+  [key: string]: unknown;
   path: string;
   fileName: string;
   backupEntry: string;
@@ -14,6 +15,7 @@ export type DriveSyncManifestEntry = {
 };
 
 export type DriveSyncManifest = {
+  [key: string]: unknown;
   schemaVersion: number;
   cloudVersion: number;
   storage: string;
@@ -109,6 +111,7 @@ function normalizeEntry(value: unknown, index: number, issues: string[]): DriveS
   }
 
   return {
+    ...value,
     path,
     fileName,
     backupEntry,
@@ -162,6 +165,7 @@ export function parseDriveSyncManifest(value: unknown) {
 
   return {
     manifest: {
+      ...value,
       schemaVersion,
       cloudVersion,
       storage,

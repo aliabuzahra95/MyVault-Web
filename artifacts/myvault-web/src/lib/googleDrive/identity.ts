@@ -46,6 +46,7 @@ let cachedToken: GoogleDriveToken | null = null;
 const LEGACY_SESSION_TOKEN_KEY = "myvault-google-drive-token";
 const SHARED_TOKEN_KEY = "myvault-google-drive-session";
 const AUTHORIZATION_KEY = "myvault-google-drive-authorized";
+const SESSION_CHANGE_EVENT = "myvault-google-drive-session-changed";
 
 type GoogleDriveTokenRequestOptions = {
   forceRefresh?: boolean;
@@ -58,12 +59,17 @@ export function hasGoogleClientId() {
 }
 
 export function getCachedGoogleDriveToken() {
-  if (cachedToken && cachedToken.expiresAt - Date.now() > 60000) return cachedToken;
   if (typeof window === "undefined") return null;
 
   try {
+    // localStorage is the cross-tab source of truth. Reading the module cache
+    // first can leave an older tab using account A briefly after another tab
+    // has selected account B.
     const stored = localStorage.getItem(SHARED_TOKEN_KEY) ?? sessionStorage.getItem(LEGACY_SESSION_TOKEN_KEY);
-    if (!stored) return null;
+    if (!stored) {
+      cachedToken = null;
+      return null;
+    }
     const parsed = JSON.parse(stored) as GoogleDriveToken;
     if (typeof parsed.accessToken !== "string" || typeof parsed.expiresAt !== "number" || parsed.expiresAt - Date.now() <= 60000) {
       clearCachedGoogleDriveToken();
@@ -79,13 +85,35 @@ export function getCachedGoogleDriveToken() {
   }
 }
 
-function rememberGoogleDriveToken(token: GoogleDriveToken) {
+function parseStoredGoogleDriveToken(value: string | null) {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value) as GoogleDriveToken;
+    return typeof parsed.accessToken === "string"
+      && typeof parsed.expiresAt === "number"
+      && parsed.expiresAt - Date.now() > 60000
+      ? parsed
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (event) => {
+    if (event.key !== SHARED_TOKEN_KEY) return;
+    cachedToken = parseStoredGoogleDriveToken(event.newValue);
+    window.dispatchEvent(new Event(SESSION_CHANGE_EVENT));
+  });
+}
+
+export function rememberGoogleDriveToken(token: GoogleDriveToken) {
   cachedToken = token;
   if (typeof window !== "undefined") {
     localStorage.setItem(SHARED_TOKEN_KEY, JSON.stringify(token));
     localStorage.setItem(AUTHORIZATION_KEY, "true");
     sessionStorage.removeItem(LEGACY_SESSION_TOKEN_KEY);
-    window.dispatchEvent(new Event("myvault-google-drive-session-changed"));
+    window.dispatchEvent(new Event(SESSION_CHANGE_EVENT));
   }
   return token;
 }
@@ -95,7 +123,7 @@ export function clearCachedGoogleDriveToken() {
   if (typeof window === "undefined") return;
   localStorage.removeItem(SHARED_TOKEN_KEY);
   sessionStorage.removeItem(LEGACY_SESSION_TOKEN_KEY);
-  window.dispatchEvent(new Event("myvault-google-drive-session-changed"));
+  window.dispatchEvent(new Event(SESSION_CHANGE_EVENT));
 }
 
 export async function disconnectGoogleDrive(options: { revoke?: boolean } = {}) {
@@ -176,7 +204,10 @@ export function loadGoogleIdentityScript() {
 export async function requestGoogleDriveToken(options: GoogleDriveTokenRequestOptions = {}): Promise<GoogleDriveToken> {
   const existingToken = options.forceRefresh ? null : getCachedGoogleDriveToken();
   if (existingToken) return existingToken;
-  if (tokenRequestPromise) return tokenRequestPromise;
+  if (tokenRequestPromise) {
+    const pendingToken = await tokenRequestPromise;
+    if (!options.forceRefresh) return pendingToken;
+  }
   if (!hasGoogleClientId()) {
     throw new Error("Google Drive setup needs a VITE_GOOGLE_CLIENT_ID value.");
   }

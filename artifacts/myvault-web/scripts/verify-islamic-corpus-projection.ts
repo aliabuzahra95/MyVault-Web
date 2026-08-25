@@ -17,16 +17,20 @@ const files = [
   file("folders.json", [
     { id: "study", parentId: null, name: "Islamic Study", mode: "study", deletedAt: null },
     { id: "library", parentId: null, name: "Islamic Library", mode: "library", deletedAt: null },
+    { id: "course-root", parentId: null, name: "Islamic course", mode: "course:course-islamic", deletedAt: null },
+    { id: "course-child", parentId: "course-root", name: "Lesson one", mode: "course:course-islamic", deletedAt: null },
     { id: "personal", parentId: null, name: "Personal Inbox", mode: "personal", deletedAt: null },
     { id: "personal-library", parentId: null, name: ".personal-library-root", mode: "personal_library", deletedAt: null },
   ]),
   file("notes.json", [
     { id: "root-note", folderId: null, title: "Islamic root note", bodyPlainText: "root", deletedAt: null },
     { id: "study-note", folderId: "study", title: "Islamic study note", bodyPlainText: "study", deletedAt: null },
+    { id: "course-note", folderId: "course-child", title: "Islamic course note", bodyPlainText: "course", deletedAt: null },
     { id: "personal-note", folderId: "personal", title: "Private note", bodyPlainText: "private", deletedAt: null },
   ]),
   file("blocks.json", [
     { id: "block-study", noteId: "study-note", type: "paragraph", content: "study", orderIndex: 0 },
+    { id: "block-course", noteId: "course-note", type: "paragraph", content: "course", orderIndex: 0 },
     { id: "block-personal", noteId: "personal-note", type: "paragraph", content: "private", orderIndex: 0 },
   ]),
   file("note_tables.json", []),
@@ -61,7 +65,7 @@ const files = [
     { id: "kt-personal", name: "Personal" },
   ]),
   file("courses.json", [
-    { id: "course-islamic", title: "Islamic course", rootFolderId: "study", deletedAt: null },
+    { id: "course-islamic", title: "Islamic course", rootFolderId: "course-root", deletedAt: null },
     { id: "course-personal", title: "Private course", rootFolderId: "personal", deletedAt: null },
   ]),
   file("course_concept_cards.json", []),
@@ -78,7 +82,7 @@ const bundle: MetadataRestoreBundle = {
   metadataFileCount: files.length,
   metadataBytes: files.reduce((total, item) => total + item.size, 0),
   files,
-  counts: { courses: 2, folders: 4, notes: 3, blocks: 2, attachments: 4, tags: 2, stickyNotes: 0, pdfAnnotations: 2 },
+  counts: { courses: 2, folders: 6, notes: 4, blocks: 3, attachments: 4, tags: 2, stickyNotes: 0, pdfAnnotations: 2 },
   groupSummaries: [],
   issues: [],
 };
@@ -88,12 +92,13 @@ const projected = projectIslamicCorpusBundle(bundle);
 const corpus = buildRestoredCorpus(bundle);
 const ids = (fileName: string) => (projected.files.find((item) => item.fileName === fileName)?.json as Array<{ id?: string }>).map((row) => row.id);
 
-assert.deepEqual(ids("folders.json"), ["study", "library"]);
-assert.deepEqual(ids("notes.json"), ["root-note", "study-note"]);
+assert.deepEqual(ids("folders.json"), ["study", "library", "course-root", "course-child"]);
+assert.deepEqual(ids("notes.json"), ["root-note", "study-note", "course-note"]);
 assert.deepEqual(ids("attachments.json"), ["root-pdf", "library-pdf"]);
 assert.deepEqual(ids("pdf_annotations.json"), ["islamic-highlight"]);
 assert.deepEqual(ids("knowledge_tags.json"), ["kt-islamic"]);
 assert.deepEqual(ids("courses.json"), ["course-islamic"]);
+assert.equal(corpus.courses[0]?.noteCount, 1);
 assert.equal(corpus.homeSnapshot.recentNotes.some((note) => note.id === "personal-note"), false);
 assert.equal(corpus.searchResults.items.some((item) => item.id === "personal-note" || item.id === "personal-pdf"), false);
 assert.equal(JSON.stringify(bundle), original, "The complete backup bundle must remain unchanged");

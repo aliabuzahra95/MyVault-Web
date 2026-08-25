@@ -16,6 +16,7 @@ export type DriveFileRecord = {
 };
 
 export type DriveUserProfile = {
+  permissionId?: string;
   displayName?: string;
   emailAddress?: string;
   photoLink?: string;
@@ -75,7 +76,7 @@ async function driveFetch<T>(accessToken: string, path: string, init: RequestIni
 }
 
 export async function getDriveUserProfile(accessToken: string) {
-  const fields = encodeURIComponent("user(displayName,emailAddress,photoLink)");
+  const fields = encodeURIComponent("user(permissionId,displayName,emailAddress,photoLink)");
   const response = await driveFetch<DriveAboutResponse>(accessToken, `/about?fields=${fields}`);
   return response.user ?? null;
 }

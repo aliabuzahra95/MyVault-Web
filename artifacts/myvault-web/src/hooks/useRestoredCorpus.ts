@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { loadRestoredCorpus, type RestoredCorpus } from "@/lib/restore/restoredCorpus";
+import { onActiveAccountChange } from "@/lib/sync/accountContext";
 
 export function useRestoredCorpus() {
   const [corpus, setCorpus] = useState<RestoredCorpus | null>(null);
@@ -27,10 +28,16 @@ export function useRestoredCorpus() {
 
     refresh();
     window.addEventListener("myvault-restored-corpus-changed", refresh);
+    const unsubscribeAccount = onActiveAccountChange(() => {
+      setCorpus(null);
+      setIsLoading(true);
+      refresh();
+    });
 
     return () => {
       cancelled = true;
       window.removeEventListener("myvault-restored-corpus-changed", refresh);
+      unsubscribeAccount();
     };
   }, []);
 

@@ -2,9 +2,14 @@ import type { MetadataRestoreBundle } from "@/lib/restore/metadataRestore";
 import type { Attachment, Block, Folder, Note } from "@workspace/api-client-react";
 import type { VaultRichTextDocument } from "@/lib/restore/vaultRichText";
 import type { RestoredPdfAnnotation } from "@/lib/restore/restoredCorpus";
+import {
+  accountStorageKey,
+  accountStorageRange,
+  getActiveAccountId,
+} from "@/lib/sync/accountContext";
 
 const DATABASE_NAME = "myvault-web-restore";
-const DATABASE_VERSION = 8;
+const DATABASE_VERSION = 9;
 const METADATA_STORE = "metadata-bundles";
 const NOTE_DRAFT_STORE = "note-drafts";
 const CREATED_FOLDER_STORE = "created-folders";
@@ -17,6 +22,12 @@ const CREATED_COURSE_STORE = "created-courses";
 const CREATED_COURSE_FOLDER_STORE = "created-course-folders";
 const CREATED_COURSE_STICKY_STORE = "created-course-sticky-notes";
 const CREATED_COURSE_CONCEPT_STORE = "created-course-concepts";
+const SYNC_BASE_STORE = "sync-bases";
+const SYNC_JOURNAL_STORE = "sync-journal";
+const SYNC_CONFLICT_STORE = "sync-conflicts";
+const RECOVERY_SNAPSHOT_STORE = "recovery-snapshots";
+const SYNC_LOG_STORE = "sync-log";
+const ACCOUNT_META_STORE = "account-meta";
 const CURRENT_METADATA_KEY = "current";
 export const LOCAL_COURSE_CHANGE_EVENT = "myvault-local-course-changed";
 export const LOCAL_CONTENT_CHANGE_EVENT = "myvault-local-content-changed";
@@ -24,6 +35,20 @@ const LEGACY_DEMO_NOTE = {
   id: "in1",
   title: "Tawakkul — Complete Reliance on Allah",
 };
+const LEGACY_MIGRATABLE_STORES = [
+  METADATA_STORE,
+  NOTE_DRAFT_STORE,
+  CREATED_FOLDER_STORE,
+  CREATED_NOTE_STORE,
+  CREATED_ATTACHMENT_STORE,
+  ATTACHMENT_BLOB_STORE,
+  PDF_READER_STATE_STORE,
+  PDF_ANNOTATION_CHANGE_STORE,
+  CREATED_COURSE_STORE,
+  CREATED_COURSE_FOLDER_STORE,
+  CREATED_COURSE_STICKY_STORE,
+  CREATED_COURSE_CONCEPT_STORE,
+] as const;
 
 export type LocalNoteDraft = {
   schemaVersion: 1;
@@ -49,6 +74,7 @@ export type LocalPdfReaderState = {
   lastOpenedAt: number;
   updatedAt: number;
   pendingDriveSync: true;
+  deletedAt?: number | null;
 };
 
 export type LocalPdfAnnotationChange = {
@@ -120,6 +146,59 @@ export type LocalCourseConcept = {
 
 export type LocallyManaged<T> = T & { deletedAt?: number | null };
 
+export type LocalSyncRevision = {
+  schemaVersion: 1;
+  revisionId: string;
+  cloudVersion: number;
+  manifestSha256: string;
+  entrySha256: string;
+  capturedAt: string;
+};
+
+export type LocalSyncBase = {
+  schemaVersion: 1;
+  accountId: string;
+  revision: LocalSyncRevision;
+  bundle: MetadataRestoreBundle;
+};
+
+export type LocalSyncOperation = {
+  schemaVersion: 1;
+  id: string;
+  accountId: string;
+  entityType: string;
+  entityId: string;
+  operation: string;
+  createdAt: string;
+  status: "pending" | "committed";
+};
+
+export type LocalSyncConflict = {
+  schemaVersion: 1;
+  id: string;
+  accountId: string;
+  entityType: string;
+  entityId: string;
+  kind: string;
+  baseRevisionId: string;
+  remoteRevisionId: string;
+  operationIds: string[];
+  createdAt: string;
+  resolvedAt: string | null;
+  resolution: "keep-web" | "keep-android" | "keep-both" | null;
+};
+
+export type LocalRecoverySnapshot = {
+  schemaVersion: 1;
+  id: string;
+  accountId: string;
+  reason: string;
+  createdAt: string;
+  base: LocalSyncBase | null;
+  bundle: MetadataRestoreBundle | null;
+  pendingOperationIds: string[];
+};
+
 export function isLocallyDeleted(value: unknown): value is { deletedAt: number } {
   return typeof value === "object" && value !== null && typeof (value as { deletedAt?: unknown }).deletedAt === "number";
 }
@@ -182,6 +261,24 @@ function openRestoreDatabase() {
       if (!database.objectStoreNames.contains(CREATED_COURSE_CONCEPT_STORE)) {
         database.createObjectStore(CREATED_COURSE_CONCEPT_STORE);
       }
+      if (!database.objectStoreNames.contains(SYNC_BASE_STORE)) {
+        database.createObjectStore(SYNC_BASE_STORE);
+      }
+      if (!database.objectStoreNames.contains(SYNC_JOURNAL_STORE)) {
+        database.createObjectStore(SYNC_JOURNAL_STORE);
+      }
+      if (!database.objectStoreNames.contains(SYNC_CONFLICT_STORE)) {
+        database.createObjectStore(SYNC_CONFLICT_STORE);
+      }
+      if (!database.objectStoreNames.contains(RECOVERY_SNAPSHOT_STORE)) {
+        database.createObjectStore(RECOVERY_SNAPSHOT_STORE);
+      }
+      if (!database.objectStoreNames.contains(SYNC_LOG_STORE)) {
+        database.createObjectStore(SYNC_LOG_STORE);
+      }
+      if (!database.objectStoreNames.contains(ACCOUNT_META_STORE)) {
+        database.createObjectStore(ACCOUNT_META_STORE);
+      }
     };
 
     request.onerror = () => {
@@ -192,6 +289,184 @@ function openRestoreDatabase() {
       resolve(request.result);
     };
   });
+}
+
+function putForAccount<T>(storeName: string, id: string, value: T) {
+  return runStoreTransaction(storeName, "readwrite", (store) => store.put(value, accountStorageKey(id))).then(() => undefined);
+}
+
+function getForAccount<T>(storeName: string, id: string) {
+  return runStoreTransaction<T | undefined>(storeName, "readonly", (store) => store.get(accountStorageKey(id))).then((value) => value ?? null);
+}
+
+function getAllForAccount<T>(storeName: string) {
+  return runStoreTransaction<T[]>(storeName, "readonly", (store) => store.getAll(accountStorageRange()));
+}
+
+function deleteForAccount(storeName: string, id: string) {
+  return runStoreTransaction(storeName, "readwrite", (store) => store.delete(accountStorageKey(id))).then(() => undefined);
+}
+
+function clearAccountStore(storeName: string, accountId = getActiveAccountId()) {
+  return new Promise<void>((resolve, reject) => {
+    void openRestoreDatabase().then((database) => {
+      const transaction = database.transaction(storeName, "readwrite");
+      const store = transaction.objectStore(storeName);
+      const request = store.getAllKeys(accountStorageRange(accountId));
+      request.onsuccess = () => request.result.forEach((key) => store.delete(key));
+      request.onerror = () => reject(request.error ?? new Error("Local account storage could not be read."));
+      transaction.oncomplete = () => {
+        database.close();
+        resolve();
+      };
+      transaction.onerror = () => {
+        const error = transaction.error ?? new Error("Local account storage could not be cleared.");
+        database.close();
+        reject(error);
+      };
+    }).catch(reject);
+  });
+}
+
+function newOperationId() {
+  return typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : `operation-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function copyLegacyStoreToAccount(storeName: string, accountId: string) {
+  return new Promise<number>((resolve, reject) => {
+    void openRestoreDatabase().then((database) => {
+      const transaction = database.transaction(storeName, "readwrite");
+      const store = transaction.objectStore(storeName);
+      let copied = 0;
+      const request = store.openCursor();
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (!cursor) return;
+        const key = String(cursor.key);
+        if (!key.includes("::")) {
+          store.put(cursor.value, accountStorageKey(key, accountId));
+          copied += 1;
+        }
+        cursor.continue();
+      };
+      request.onerror = () => reject(request.error ?? new Error("Legacy browser data could not be read."));
+      transaction.oncomplete = () => {
+        database.close();
+        resolve(copied);
+      };
+      transaction.onerror = () => {
+        const error = transaction.error ?? new Error("Legacy browser data could not be migrated.");
+        database.close();
+        reject(error);
+      };
+    }).catch(reject);
+  });
+}
+
+async function migrateLegacyStorage(accountId: string) {
+  const owner = await runStoreTransaction<string | undefined>(ACCOUNT_META_STORE, "readonly", (store) => store.get("legacy-owner"));
+  if (owner) return { owner, copied: 0 };
+
+  let copied = 0;
+  for (const storeName of LEGACY_MIGRATABLE_STORES) {
+    copied += await copyLegacyStoreToAccount(storeName, accountId);
+  }
+  await runStoreTransaction(ACCOUNT_META_STORE, "readwrite", (store) => store.put(accountId, "legacy-owner"));
+  return { owner: accountId, copied };
+}
+
+export async function prepareAccountStorage(accountId: string) {
+  const runMigration = () => migrateLegacyStorage(accountId);
+  const result = typeof navigator !== "undefined" && navigator.locks
+    ? await navigator.locks.request("myvault-legacy-storage-migration", { mode: "exclusive" }, runMigration)
+    : await runMigration();
+
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new Event("myvault-restored-corpus-changed"));
+  }
+  return result;
+}
+
+export function appendLocalSyncOperation(entityType: string, entityId: string, operation: string) {
+  const accountId = getActiveAccountId();
+  const record: LocalSyncOperation = {
+    schemaVersion: 1,
+    id: newOperationId(),
+    accountId,
+    entityType,
+    entityId,
+    operation,
+    createdAt: new Date().toISOString(),
+    status: "pending",
+  };
+  return putForAccount(SYNC_JOURNAL_STORE, record.id, record).then(() => {
+    notifyLocalContentChange();
+    return record;
+  });
+}
+
+export function loadLocalSyncOperations() {
+  return getAllForAccount<LocalSyncOperation>(SYNC_JOURNAL_STORE);
+}
+
+export function loadPendingLocalSyncOperations() {
+  return loadLocalSyncOperations().then((operations) => operations.filter((operation) => operation.status === "pending"));
+}
+
+export async function hasPendingLocalChanges() {
+  const [operations, ...legacyPending] = await Promise.all([
+    loadPendingLocalSyncOperations(),
+    getAllForAccount(NOTE_DRAFT_STORE),
+    getAllForAccount(CREATED_FOLDER_STORE),
+    getAllForAccount(CREATED_NOTE_STORE),
+    getAllForAccount(CREATED_ATTACHMENT_STORE),
+    getAllForAccount(PDF_READER_STATE_STORE),
+    getAllForAccount(PDF_ANNOTATION_CHANGE_STORE),
+    getAllForAccount(CREATED_COURSE_STORE),
+    getAllForAccount(CREATED_COURSE_FOLDER_STORE),
+    getAllForAccount(CREATED_COURSE_STICKY_STORE),
+    getAllForAccount(CREATED_COURSE_CONCEPT_STORE),
+  ]);
+  return operations.length > 0 || legacyPending.some((records) => records.length > 0);
+}
+
+export function saveLocalSyncBase(base: LocalSyncBase) {
+  return putForAccount(SYNC_BASE_STORE, "base", base);
+}
+
+export function loadLocalSyncBase() {
+  return getForAccount<LocalSyncBase>(SYNC_BASE_STORE, "base");
+}
+
+export function saveLocalSyncConflict(conflict: LocalSyncConflict) {
+  return putForAccount(SYNC_CONFLICT_STORE, conflict.id, conflict);
+}
+
+export function loadLocalSyncConflicts() {
+  return getAllForAccount<LocalSyncConflict>(SYNC_CONFLICT_STORE);
+}
+
+export async function createLocalRecoverySnapshot(reason: string) {
+  const accountId = getActiveAccountId();
+  const [base, bundle, operations] = await Promise.all([
+    loadLocalSyncBase(),
+    loadMetadataRestoreBundle(),
+    loadPendingLocalSyncOperations(),
+  ]);
+  const snapshot: LocalRecoverySnapshot = {
+    schemaVersion: 1,
+    id: newOperationId(),
+    accountId,
+    reason,
+    createdAt: new Date().toISOString(),
+    base,
+    bundle,
+    pendingOperationIds: operations.map((operation) => operation.id),
+  };
+  await putForAccount(RECOVERY_SNAPSHOT_STORE, snapshot.id, snapshot);
+  return snapshot;
 }
 
 function runStoreTransaction<T>(storeName: string, mode: IDBTransactionMode, callback: (store: IDBObjectStore) => IDBRequest<T>) {
@@ -224,33 +499,34 @@ function runStoreTransaction<T>(storeName: string, mode: IDBTransactionMode, cal
 }
 
 export async function saveMetadataRestoreBundle(bundle: MetadataRestoreBundle) {
-  await runStoreTransaction(METADATA_STORE, "readwrite", (store) => store.put(bundle, CURRENT_METADATA_KEY));
+  await putForAccount(METADATA_STORE, CURRENT_METADATA_KEY, bundle);
   await reconcileLocalNoteDrafts(bundle);
   if (typeof window !== "undefined") window.dispatchEvent(new Event("myvault-restored-corpus-changed"));
 }
 
 export function loadMetadataRestoreBundle() {
-  return runStoreTransaction<MetadataRestoreBundle | undefined>(METADATA_STORE, "readonly", (store) => store.get(CURRENT_METADATA_KEY)).then((bundle) => bundle ?? null);
+  return getForAccount<MetadataRestoreBundle>(METADATA_STORE, CURRENT_METADATA_KEY);
 }
 
 export function clearMetadataRestoreBundle() {
-  return runStoreTransaction(METADATA_STORE, "readwrite", (store) => store.delete(CURRENT_METADATA_KEY)).then(() => undefined);
+  return deleteForAccount(METADATA_STORE, CURRENT_METADATA_KEY);
 }
 
-export function saveLocalNoteDraft(draft: LocalNoteDraft) {
-  return runStoreTransaction(NOTE_DRAFT_STORE, "readwrite", (store) => store.put(draft, draft.noteId)).then(() => undefined);
+export async function saveLocalNoteDraft(draft: LocalNoteDraft) {
+  await putForAccount(NOTE_DRAFT_STORE, draft.noteId, draft);
+  await appendLocalSyncOperation("note", draft.noteId, "update");
 }
 
 export function loadLocalNoteDraft(noteId: string) {
-  return runStoreTransaction<LocalNoteDraft | undefined>(NOTE_DRAFT_STORE, "readonly", (store) => store.get(noteId)).then((draft) => draft ?? null);
+  return getForAccount<LocalNoteDraft>(NOTE_DRAFT_STORE, noteId);
 }
 
 export function loadLocalNoteDrafts() {
-  return runStoreTransaction<LocalNoteDraft[]>(NOTE_DRAFT_STORE, "readonly", (store) => store.getAll());
+  return getAllForAccount<LocalNoteDraft>(NOTE_DRAFT_STORE);
 }
 
 export function clearLocalNoteDraft(noteId: string) {
-  return runStoreTransaction(NOTE_DRAFT_STORE, "readwrite", (store) => store.delete(noteId)).then(() => undefined);
+  return deleteForAccount(NOTE_DRAFT_STORE, noteId);
 }
 
 function restoredNoteRows(bundle: MetadataRestoreBundle) {
@@ -279,7 +555,7 @@ export async function reconcileLocalNoteDrafts(bundle: MetadataRestoreBundle) {
     const restoredNote = restoredNotes.get(draft.noteId);
     const restoredUpdatedAt = restoredNote?.updatedAt;
     if (typeof restoredUpdatedAt === "number" && restoredUpdatedAt === draft.baseUpdatedAt) {
-      await saveLocalNoteDraft({ ...draft, baseCloudVersion: bundle.cloudVersion });
+      await putForAccount(NOTE_DRAFT_STORE, draft.noteId, { ...draft, baseCloudVersion: bundle.cloudVersion });
       rebased += 1;
     } else {
       conflicts += 1;
@@ -289,119 +565,175 @@ export async function reconcileLocalNoteDrafts(bundle: MetadataRestoreBundle) {
   return { rebased, removedDemoDrafts, conflicts };
 }
 
-export function saveLocalCreatedFolder(folder: Folder) {
-  return runStoreTransaction(CREATED_FOLDER_STORE, "readwrite", (store) => store.put(folder, folder.id)).then(() => notifyLocalContentChange());
+export async function saveLocalCreatedFolder(folder: Folder) {
+  await putForAccount(CREATED_FOLDER_STORE, folder.id, folder);
+  await appendLocalSyncOperation("folder", folder.id, isLocallyDeleted(folder) ? "delete" : "upsert");
 }
 
 export function loadLocalCreatedFolders() {
-  return runStoreTransaction<Folder[]>(CREATED_FOLDER_STORE, "readonly", (store) => store.getAll());
+  return getAllForAccount<Folder>(CREATED_FOLDER_STORE);
 }
 
-export function deleteLocalCreatedFolder(folderId: string) {
-  return runStoreTransaction(CREATED_FOLDER_STORE, "readwrite", (store) => store.delete(folderId)).then(() => undefined);
+export async function deleteLocalCreatedFolder(folderId: string, source?: Folder) {
+  const existing = source ?? await getForAccount<Folder>(CREATED_FOLDER_STORE, folderId);
+  if (!existing) throw new Error("The folder could not be retained as a deletion tombstone.");
+  await putForAccount(CREATED_FOLDER_STORE, folderId, { ...existing, updatedAt: Date.now(), deletedAt: Date.now() });
+  await appendLocalSyncOperation("folder", folderId, "delete");
 }
 
-export function saveLocalCreatedNote(note: Note) {
-  return runStoreTransaction(CREATED_NOTE_STORE, "readwrite", (store) => store.put(note, note.id)).then(() => notifyLocalContentChange());
+export async function saveLocalCreatedNote(note: Note) {
+  await putForAccount(CREATED_NOTE_STORE, note.id, note);
+  await appendLocalSyncOperation("note", note.id, isLocallyDeleted(note) ? "delete" : "upsert");
 }
 
 export function loadLocalCreatedNotes() {
-  return runStoreTransaction<Note[]>(CREATED_NOTE_STORE, "readonly", (store) => store.getAll());
+  return getAllForAccount<Note>(CREATED_NOTE_STORE);
 }
 
-export function deleteLocalCreatedNote(noteId: string) {
-  return runStoreTransaction(CREATED_NOTE_STORE, "readwrite", (store) => store.delete(noteId)).then(() => undefined);
+export async function deleteLocalCreatedNote(noteId: string, source?: Note) {
+  const existing = source ?? await getForAccount<Note>(CREATED_NOTE_STORE, noteId);
+  if (!existing) throw new Error("The note could not be retained as a deletion tombstone.");
+  await putForAccount(CREATED_NOTE_STORE, noteId, { ...existing, updatedAt: Date.now(), deletedAt: Date.now() });
+  await appendLocalSyncOperation("note", noteId, "delete");
 }
 
-export function saveLocalCourse(course: LocalCourse) {
-  return runStoreTransaction(CREATED_COURSE_STORE, "readwrite", (store) => store.put(course, course.id)).then(() => notifyLocalCourseChange());
+export async function saveLocalCourse(course: LocalCourse) {
+  await putForAccount(CREATED_COURSE_STORE, course.id, course);
+  await appendLocalSyncOperation("course", course.id, isLocallyDeleted(course) ? "delete" : "upsert");
+  notifyLocalCourseChange();
 }
 
 export function loadLocalCourses() {
-  return runStoreTransaction<LocalCourse[]>(CREATED_COURSE_STORE, "readonly", (store) => store.getAll());
+  return getAllForAccount<LocalCourse>(CREATED_COURSE_STORE);
 }
 
-export function deleteLocalCourse(courseId: string) {
-  return runStoreTransaction(CREATED_COURSE_STORE, "readwrite", (store) => store.delete(courseId)).then(() => notifyLocalCourseChange());
+export async function deleteLocalCourse(courseId: string, source?: LocalCourse) {
+  const existing = source ?? await getForAccount<LocalCourse>(CREATED_COURSE_STORE, courseId);
+  if (!existing) throw new Error("The course could not be retained as a deletion record.");
+  const now = Date.now();
+  await putForAccount(CREATED_COURSE_STORE, courseId, { ...existing, updatedAt: now, deletedAt: now });
+  await appendLocalSyncOperation("course", courseId, "delete");
+  notifyLocalCourseChange();
 }
 
-export function saveLocalCourseFolder(folder: LocalCourseFolder) {
-  return runStoreTransaction(CREATED_COURSE_FOLDER_STORE, "readwrite", (store) => store.put(folder, folder.id)).then(() => notifyLocalCourseChange());
+export async function saveLocalCourseFolder(folder: LocalCourseFolder) {
+  await putForAccount(CREATED_COURSE_FOLDER_STORE, folder.id, folder);
+  await appendLocalSyncOperation("course-folder", folder.id, isLocallyDeleted(folder) ? "delete" : "upsert");
+  notifyLocalCourseChange();
 }
 
 export function loadLocalCourseFolders() {
-  return runStoreTransaction<LocalCourseFolder[]>(CREATED_COURSE_FOLDER_STORE, "readonly", (store) => store.getAll());
+  return getAllForAccount<LocalCourseFolder>(CREATED_COURSE_FOLDER_STORE);
 }
 
-export function deleteLocalCourseFolder(folderId: string) {
-  return runStoreTransaction(CREATED_COURSE_FOLDER_STORE, "readwrite", (store) => store.delete(folderId)).then(() => notifyLocalCourseChange());
+export async function deleteLocalCourseFolder(folderId: string, source?: LocalCourseFolder) {
+  const existing = source ?? await getForAccount<LocalCourseFolder>(CREATED_COURSE_FOLDER_STORE, folderId);
+  if (!existing) throw new Error("The course folder could not be retained as a deletion tombstone.");
+  const now = Date.now();
+  await putForAccount(CREATED_COURSE_FOLDER_STORE, folderId, { ...existing, updatedAt: now, deletedAt: now });
+  await appendLocalSyncOperation("course-folder", folderId, "delete");
+  notifyLocalCourseChange();
 }
 
-export function saveLocalCourseStickyNote(stickyNote: LocalCourseStickyNote) {
-  return runStoreTransaction(CREATED_COURSE_STICKY_STORE, "readwrite", (store) => store.put(stickyNote, stickyNote.id)).then(() => notifyLocalCourseChange());
+export async function saveLocalCourseStickyNote(stickyNote: LocalCourseStickyNote) {
+  await putForAccount(CREATED_COURSE_STICKY_STORE, stickyNote.id, stickyNote);
+  await appendLocalSyncOperation("course-sticky-note", stickyNote.id, isLocallyDeleted(stickyNote) ? "delete" : "upsert");
+  notifyLocalCourseChange();
 }
 
 export function loadLocalCourseStickyNotes() {
-  return runStoreTransaction<LocalCourseStickyNote[]>(CREATED_COURSE_STICKY_STORE, "readonly", (store) => store.getAll());
+  return getAllForAccount<LocalCourseStickyNote>(CREATED_COURSE_STICKY_STORE);
 }
 
-export function deleteLocalCourseStickyNote(stickyNoteId: string) {
-  return runStoreTransaction(CREATED_COURSE_STICKY_STORE, "readwrite", (store) => store.delete(stickyNoteId)).then(() => notifyLocalCourseChange());
+export async function deleteLocalCourseStickyNote(stickyNoteId: string, source?: LocalCourseStickyNote) {
+  const existing = source ?? await getForAccount<LocalCourseStickyNote>(CREATED_COURSE_STICKY_STORE, stickyNoteId);
+  if (!existing) throw new Error("The sticky note could not be retained as a deletion record.");
+  const now = Date.now();
+  await putForAccount(CREATED_COURSE_STICKY_STORE, stickyNoteId, { ...existing, updatedAt: now, deletedAt: now });
+  await appendLocalSyncOperation("course-sticky-note", stickyNoteId, "delete");
+  notifyLocalCourseChange();
 }
 
-export function saveLocalCourseConcept(concept: LocalCourseConcept) {
-  return runStoreTransaction(CREATED_COURSE_CONCEPT_STORE, "readwrite", (store) => store.put(concept, concept.id)).then(() => notifyLocalCourseChange());
+export async function saveLocalCourseConcept(concept: LocalCourseConcept) {
+  await putForAccount(CREATED_COURSE_CONCEPT_STORE, concept.id, concept);
+  await appendLocalSyncOperation("course-concept", concept.id, isLocallyDeleted(concept) ? "delete" : "upsert");
+  notifyLocalCourseChange();
 }
 
 export function loadLocalCourseConcepts() {
-  return runStoreTransaction<LocalCourseConcept[]>(CREATED_COURSE_CONCEPT_STORE, "readonly", (store) => store.getAll());
+  return getAllForAccount<LocalCourseConcept>(CREATED_COURSE_CONCEPT_STORE);
 }
 
-export function deleteLocalCourseConcept(conceptId: string) {
-  return runStoreTransaction(CREATED_COURSE_CONCEPT_STORE, "readwrite", (store) => store.delete(conceptId)).then(() => notifyLocalCourseChange());
+export async function deleteLocalCourseConcept(conceptId: string, source?: LocalCourseConcept) {
+  const existing = source ?? await getForAccount<LocalCourseConcept>(CREATED_COURSE_CONCEPT_STORE, conceptId);
+  if (!existing) throw new Error("The concept card could not be retained as a deletion record.");
+  const now = Date.now();
+  await putForAccount(CREATED_COURSE_CONCEPT_STORE, conceptId, { ...existing, updatedAt: now, deletedAt: now });
+  await appendLocalSyncOperation("course-concept", conceptId, "delete");
+  notifyLocalCourseChange();
 }
 
-export function saveLocalCreatedAttachment(attachment: Attachment) {
-  return runStoreTransaction(CREATED_ATTACHMENT_STORE, "readwrite", (store) => store.put(attachment, attachment.id)).then(() => notifyLocalContentChange());
+export async function saveLocalCreatedAttachment(attachment: Attachment) {
+  await putForAccount(CREATED_ATTACHMENT_STORE, attachment.id, attachment);
+  await appendLocalSyncOperation("attachment", attachment.id, isLocallyDeleted(attachment) ? "delete" : "upsert");
 }
 
 export function loadLocalCreatedAttachments() {
-  return runStoreTransaction<Attachment[]>(CREATED_ATTACHMENT_STORE, "readonly", (store) => store.getAll());
+  return getAllForAccount<Attachment>(CREATED_ATTACHMENT_STORE);
 }
 
-export function deleteLocalCreatedAttachment(attachmentId: string) {
-  return runStoreTransaction(CREATED_ATTACHMENT_STORE, "readwrite", (store) => store.delete(attachmentId)).then(() => undefined);
+export async function deleteLocalCreatedAttachment(attachmentId: string, source?: Attachment) {
+  const existing = source ?? await getForAccount<Attachment>(CREATED_ATTACHMENT_STORE, attachmentId);
+  if (!existing) throw new Error("The attachment could not be retained as a deletion tombstone.");
+  await putForAccount(CREATED_ATTACHMENT_STORE, attachmentId, { ...existing, updatedAt: Date.now(), deletedAt: Date.now() });
+  await appendLocalSyncOperation("attachment", attachmentId, "delete");
 }
 
 export function saveLocalAttachmentBlob(attachmentId: string, blob: Blob) {
-  return runStoreTransaction(ATTACHMENT_BLOB_STORE, "readwrite", (store) => store.put(blob, attachmentId)).then(() => undefined);
+  return putForAccount(ATTACHMENT_BLOB_STORE, attachmentId, blob);
 }
 
 export function loadLocalAttachmentBlob(attachmentId: string) {
-  return runStoreTransaction<Blob | undefined>(ATTACHMENT_BLOB_STORE, "readonly", (store) => store.get(attachmentId)).then((blob) => blob ?? null);
+  return getForAccount<Blob>(ATTACHMENT_BLOB_STORE, attachmentId);
 }
 
 export function deleteLocalAttachmentBlob(attachmentId: string) {
-  return runStoreTransaction(ATTACHMENT_BLOB_STORE, "readwrite", (store) => store.delete(attachmentId)).then(() => undefined);
+  return deleteForAccount(ATTACHMENT_BLOB_STORE, attachmentId);
 }
 
-export function saveLocalPdfReaderState(state: LocalPdfReaderState) {
-  return runStoreTransaction(PDF_READER_STATE_STORE, "readwrite", (store) => store.put(state, state.attachmentId)).then(() => undefined);
+export async function saveLocalPdfReaderState(state: LocalPdfReaderState) {
+  await putForAccount(PDF_READER_STATE_STORE, state.attachmentId, state);
+  await appendLocalSyncOperation("pdf-reading-progress", state.attachmentId, "update");
 }
 
 export function loadLocalPdfReaderState(attachmentId: string) {
-  return runStoreTransaction<LocalPdfReaderState | undefined>(PDF_READER_STATE_STORE, "readonly", (store) => store.get(attachmentId)).then((state) => state ?? null);
+  return getForAccount<LocalPdfReaderState>(PDF_READER_STATE_STORE, attachmentId);
 }
 
 export function loadLocalPdfReaderStates() {
-  return runStoreTransaction<LocalPdfReaderState[]>(PDF_READER_STATE_STORE, "readonly", (store) => store.getAll());
+  return getAllForAccount<LocalPdfReaderState>(PDF_READER_STATE_STORE);
 }
 
-export function deleteLocalPdfReaderState(attachmentId: string) {
-  return runStoreTransaction(PDF_READER_STATE_STORE, "readwrite", (store) => store.delete(attachmentId)).then(() => undefined);
+export async function deleteLocalPdfReaderState(attachmentId: string) {
+  const now = Date.now();
+  const existing = await getForAccount<LocalPdfReaderState>(PDF_READER_STATE_STORE, attachmentId);
+  const tombstone: LocalPdfReaderState = {
+    schemaVersion: 1,
+    attachmentId,
+    pageIndex: existing?.pageIndex ?? 0,
+    pageCount: existing?.pageCount ?? 0,
+    progressPercent: existing?.progressPercent ?? 0,
+    zoom: existing?.zoom ?? 1,
+    lastOpenedAt: existing?.lastOpenedAt ?? now,
+    updatedAt: now,
+    pendingDriveSync: true,
+    deletedAt: now,
+  };
+  await putForAccount(PDF_READER_STATE_STORE, attachmentId, tombstone);
+  await appendLocalSyncOperation("pdf-reading-progress", attachmentId, "delete");
 }
 
-export function saveLocalPdfAnnotation(annotation: RestoredPdfAnnotation) {
+export async function saveLocalPdfAnnotation(annotation: RestoredPdfAnnotation) {
   const change: LocalPdfAnnotationChange = {
     schemaVersion: 1,
     id: annotation.id,
@@ -411,10 +743,11 @@ export function saveLocalPdfAnnotation(annotation: RestoredPdfAnnotation) {
     savedAt: Date.now(),
     pendingDriveSync: true,
   };
-  return runStoreTransaction(PDF_ANNOTATION_CHANGE_STORE, "readwrite", (store) => store.put(change, change.id)).then(() => undefined);
+  await putForAccount(PDF_ANNOTATION_CHANGE_STORE, change.id, change);
+  await appendLocalSyncOperation("pdf-annotation", annotation.id, "upsert");
 }
 
-export function deleteLocalPdfAnnotation(annotationId: string, attachmentId: string) {
+export async function deleteLocalPdfAnnotation(annotationId: string, attachmentId: string) {
   const change: LocalPdfAnnotationChange = {
     schemaVersion: 1,
     id: annotationId,
@@ -424,22 +757,23 @@ export function deleteLocalPdfAnnotation(annotationId: string, attachmentId: str
     savedAt: Date.now(),
     pendingDriveSync: true,
   };
-  return runStoreTransaction(PDF_ANNOTATION_CHANGE_STORE, "readwrite", (store) => store.put(change, change.id)).then(() => undefined);
+  await putForAccount(PDF_ANNOTATION_CHANGE_STORE, change.id, change);
+  await appendLocalSyncOperation("pdf-annotation", annotationId, "delete");
 }
 
 export function loadLocalPdfAnnotationChanges(attachmentId?: string) {
-  return runStoreTransaction<LocalPdfAnnotationChange[]>(PDF_ANNOTATION_CHANGE_STORE, "readonly", (store) => store.getAll())
+  return getAllForAccount<LocalPdfAnnotationChange>(PDF_ANNOTATION_CHANGE_STORE)
     .then((changes) => attachmentId ? changes.filter((change) => change.attachmentId === attachmentId) : changes);
 }
 
 export async function deleteLocalPdfAnnotationChangesForAttachment(attachmentId: string) {
   const changes = await loadLocalPdfAnnotationChanges(attachmentId);
   await Promise.all(changes.map((change) => (
-    runStoreTransaction(PDF_ANNOTATION_CHANGE_STORE, "readwrite", (store) => store.delete(change.id)).then(() => undefined)
+    deleteForAccount(PDF_ANNOTATION_CHANGE_STORE, change.id)
   )));
 }
 
-export async function clearLocalSyncPendingChanges() {
+export async function clearLocalSyncPendingChanges(operationIds?: string[]) {
   const stores = [
     NOTE_DRAFT_STORE,
     CREATED_FOLDER_STORE,
@@ -453,13 +787,28 @@ export async function clearLocalSyncPendingChanges() {
     CREATED_COURSE_STICKY_STORE,
     CREATED_COURSE_CONCEPT_STORE,
   ];
-  await Promise.all(stores.map((storeName) => (
-    runStoreTransaction(storeName, "readwrite", (store) => store.clear()).then(() => undefined)
-  )));
+  const operations = await loadPendingLocalSyncOperations();
+  const committedIds = new Set(operationIds ?? operations.map((operation) => operation.id));
+  const remainingOperations = operations.filter((operation) => !committedIds.has(operation.id));
+
+  await Promise.all(operations
+    .filter((operation) => committedIds.has(operation.id))
+    .map((operation) => deleteForAccount(SYNC_JOURNAL_STORE, operation.id)));
+
+  // The overlay stores contain the latest value for each entity, not one value per
+  // journal entry. If an edit arrived while Drive was committing, retaining every
+  // overlay is safer than erasing that newer value. The next backup can coalesce it.
+  if (remainingOperations.length === 0) {
+    await Promise.all(stores.map((storeName) => clearAccountStore(storeName)));
+  }
   if (typeof window !== "undefined") window.dispatchEvent(new Event("myvault-restored-corpus-changed"));
+  return {
+    clearedOverlayStores: remainingOperations.length === 0,
+    remainingOperationIds: remainingOperations.map((operation) => operation.id),
+  };
 }
 
-export async function clearLocalWorkspaceData() {
+export async function clearLocalWorkspaceData(accountId = getActiveAccountId()) {
   const stores = [
     METADATA_STORE,
     NOTE_DRAFT_STORE,
@@ -473,11 +822,14 @@ export async function clearLocalWorkspaceData() {
     CREATED_COURSE_FOLDER_STORE,
     CREATED_COURSE_STICKY_STORE,
     CREATED_COURSE_CONCEPT_STORE,
+    SYNC_BASE_STORE,
+    SYNC_JOURNAL_STORE,
+    SYNC_CONFLICT_STORE,
+    RECOVERY_SNAPSHOT_STORE,
+    SYNC_LOG_STORE,
   ];
 
-  await Promise.all(stores.map((storeName) => (
-    runStoreTransaction(storeName, "readwrite", (store) => store.clear()).then(() => undefined)
-  )));
+  await Promise.all(stores.map((storeName) => clearAccountStore(storeName, accountId)));
 
   if (typeof window !== "undefined") {
     window.dispatchEvent(new Event("myvault-restored-corpus-changed"));

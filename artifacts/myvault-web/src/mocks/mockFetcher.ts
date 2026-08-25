@@ -130,11 +130,12 @@ export function installMockFetcher(): void {
         if (idx < 0) return jsonResponse({ error: "Not found" }, 404);
         const body = JSON.parse(init?.body as string ?? "{}");
         const updatedFolder = { ...folderSource[idx], ...body, updatedAt: Date.now() };
-        if (createdFolders.some((folder) => folder.id === id)) await saveLocalCreatedFolder(updatedFolder);
+        await saveLocalCreatedFolder(updatedFolder);
         return jsonResponse(updatedFolder);
       }
       if (method === "DELETE") {
-        await deleteLocalCreatedFolder(id);
+        if (idx < 0) return jsonResponse({ error: "Not found" }, 404);
+        await deleteLocalCreatedFolder(id, folderSource[idx]);
         return new Response(null, { status: 204 });
       }
     }
@@ -170,17 +171,15 @@ export function installMockFetcher(): void {
       if (method === "PUT") {
         const body = JSON.parse(init?.body as string ?? "{}");
         const note = noteSource.find(n => n.id === noteTagNames.id);
+        if (!note) return jsonResponse({ error: "Not found" }, 404);
         const tagNames = body.tagNames ?? [];
-        if (note && createdNotes.some((createdNote) => createdNote.id === note.id)) {
-          await saveLocalCreatedNote({ ...note, tagNames, updatedAt: Date.now() });
-        }
+        await saveLocalCreatedNote({ ...note, tagNames, updatedAt: Date.now() });
         return jsonResponse(tagNames);
       }
     }
     const noteBlocks = matchPath(apiPath, "/notes/:id/blocks");
     if (noteBlocks && method === "PUT") {
-      const body = JSON.parse(init?.body as string ?? "{}");
-      return jsonResponse(body.blocks ?? []);
+      return jsonResponse({ error: "Block updates must use the universal note editor so Android formatting can be preserved." }, 409);
     }
     const noteById = matchPath(apiPath, "/notes/:id");
     if (noteById) {
@@ -197,11 +196,12 @@ export function installMockFetcher(): void {
         if (idx < 0) return jsonResponse({ error: "Not found" }, 404);
         const body = JSON.parse(init?.body as string ?? "{}");
         const updatedNote = { ...noteSource[idx], ...body, updatedAt: Date.now() };
-        if (createdNotes.some((note) => note.id === id)) await saveLocalCreatedNote(updatedNote);
+        await saveLocalCreatedNote(updatedNote);
         return jsonResponse(updatedNote);
       }
       if (method === "DELETE") {
-        await deleteLocalCreatedNote(id);
+        if (idx < 0) return jsonResponse({ error: "Not found" }, 404);
+        await deleteLocalCreatedNote(id, noteSource[idx]);
         return new Response(null, { status: 204 });
       }
     }
@@ -270,8 +270,7 @@ export function installMockFetcher(): void {
       return jsonResponse(restoredCorpus?.knowledgeTags ?? []);
     }
     if (apiPath === "/knowledge-tags" && method === "POST") {
-      const body = JSON.parse(init?.body as string ?? "{}");
-      return jsonResponse({ id: uid(), name: body.name, linkCount: 0, createdAt: Date.now() }, 201);
+      return jsonResponse({ error: "Knowledge-tag creation is not yet available for Android-compatible Drive backup." }, 501);
     }
     const ktLinks = matchPath(apiPath, "/knowledge-tags/:id/links");
     if (ktLinks && method === "GET") {

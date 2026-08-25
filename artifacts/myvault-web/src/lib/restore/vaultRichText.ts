@@ -33,6 +33,11 @@ export type VaultRichTextDocument = {
   noteLinks: VaultNoteLink[];
 };
 
+export type VaultRichTextEnvelope = {
+  document: VaultRichTextDocument;
+  preservedFields: Record<string, unknown>;
+};
+
 const STYLE_NAMES = new Set<VaultInlineStyle>([
   "Bold",
   "Italic",
@@ -71,6 +76,56 @@ function parseJsonValue(value: string): unknown {
     }
   }
   return current;
+}
+
+function hasOnlyKeys(value: Record<string, unknown>, keys: ReadonlySet<string>) {
+  return Object.keys(value).every((key) => keys.has(key));
+}
+
+export function inspectVaultRichTextEnvelope(value: string | null | undefined): VaultRichTextEnvelope | null {
+  if (!value?.trim()) return null;
+  const parsed = parseJsonValue(value);
+  if (!isRecord(parsed) || typeof parsed.text !== "string") return null;
+
+  const textLength = parsed.text.length;
+  const styleMarks = Array.isArray(parsed.styleMarks) ? parsed.styleMarks : [];
+  const noteLinks = Array.isArray(parsed.noteLinks) ? parsed.noteLinks : [];
+  const validStyleMarkKeys = new Set(["start", "end", "style"]);
+  const validNoteLinkKeys = new Set(["start", "end", "noteId"]);
+  const validStyleMarks = styleMarks.every((candidate) => (
+    isRecord(candidate) &&
+    hasOnlyKeys(candidate, validStyleMarkKeys) &&
+    typeof candidate.start === "number" && Number.isInteger(candidate.start) && candidate.start >= 0 &&
+    typeof candidate.end === "number" && Number.isInteger(candidate.end) && candidate.end <= textLength && candidate.start < candidate.end &&
+    typeof candidate.style === "string" && STYLE_NAMES.has(candidate.style as VaultInlineStyle)
+  ));
+  const validNoteLinks = noteLinks.every((candidate) => (
+    isRecord(candidate) &&
+    hasOnlyKeys(candidate, validNoteLinkKeys) &&
+    typeof candidate.start === "number" && Number.isInteger(candidate.start) && candidate.start >= 0 &&
+    typeof candidate.end === "number" && Number.isInteger(candidate.end) && candidate.end <= textLength && candidate.start < candidate.end &&
+    typeof candidate.noteId === "string" && candidate.noteId.length > 0
+  ));
+  if (!validStyleMarks || !validNoteLinks) return null;
+
+  const document = parseVaultRichTextDocument(value);
+  if (!document || document.styleMarks.length !== styleMarks.length || document.noteLinks.length !== noteLinks.length) return null;
+  const preservedFields = Object.fromEntries(
+    Object.entries(parsed).filter(([key]) => !new Set(["text", "styleMarks", "noteLinks"]).has(key)),
+  );
+  return { document, preservedFields };
+}
+
+export function serializeVaultRichTextEnvelope(
+  document: VaultRichTextDocument,
+  preservedFields: Record<string, unknown> = {},
+) {
+  return JSON.stringify({
+    ...preservedFields,
+    text: document.text,
+    styleMarks: document.styleMarks,
+    noteLinks: document.noteLinks,
+  });
 }
 
 export function parseVaultRichTextDocument(value: string | null | undefined): VaultRichTextDocument | null {

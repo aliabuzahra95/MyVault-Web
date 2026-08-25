@@ -20,6 +20,7 @@ import {
   requestGoogleDriveToken,
   type GoogleDriveToken,
 } from "@/lib/googleDrive/identity";
+import { assertGoogleDriveSession, verifyAndActivateGoogleDriveSession } from "@/lib/googleDrive/accountSession";
 import { cacheAttachmentManifestEntries, getAttachmentFileClaim } from "@/lib/restore/attachmentFileRestore";
 import { parseDriveSyncManifest } from "@/lib/restore/driveManifestPreview";
 import { recordRecentActivity } from "@/lib/recentActivity";
@@ -226,6 +227,7 @@ export default function LibraryDocumentPage() {
     setStatus("locating");
 
     try {
+      const { accountId } = await verifyAndActivateGoogleDriveSession(token);
       const claim = await getAttachmentFileClaim(requestedAttachmentId);
       if (activeAttachmentId.current !== requestedAttachmentId) return;
       if (!claim) {
@@ -235,6 +237,7 @@ export default function LibraryDocumentPage() {
       let manifestEntry = claim.manifestEntry;
       if (!manifestEntry) {
         const scan = await findMyVaultDriveMap(token.accessToken);
+        assertGoogleDriveSession(token, accountId);
         if (!scan.manifestFile) throw new Error("The MyVault sync manifest could not be found in Google Drive.");
         const rawManifest = await downloadDriveFileJson<unknown>(token.accessToken, scan.manifestFile.id);
         const parsed = parseDriveSyncManifest(rawManifest);
@@ -248,6 +251,7 @@ export default function LibraryDocumentPage() {
       if (!manifestEntry?.cloudFileId) throw new Error("Google Drive does not contain the restored file for this document.");
       setStatus("downloading");
       const blob = await downloadDriveFileBlob(token.accessToken, manifestEntry.cloudFileId, attachment.mimeType);
+      assertGoogleDriveSession(token, accountId);
       pdfSessionCache.set(pdfSessionCacheKey(attachment), blob);
       void saveLocalAttachmentBlob(attachment.id, blob).catch(() => undefined);
       const nextUrl = URL.createObjectURL(blob);

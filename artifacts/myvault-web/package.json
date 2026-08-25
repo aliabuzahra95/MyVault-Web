@@ -8,7 +8,9 @@
     "build": "vite build --config vite.config.ts",
     "serve": "vite preview --config vite.config.ts --host 0.0.0.0",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "verify:workspace": "tsx scripts/verify-islamic-corpus-projection.ts"
+    "verify:workspace": "tsx scripts/verify-islamic-corpus-projection.ts",
+    "verify:sync": "tsx scripts/verify-safe-sync-contract.ts",
+    "verify:sync-browser": "tsx scripts/verify-browser-sync.mjs"
   },
   "devDependencies": {
     "@hookform/resolvers": "^3.10.0",
