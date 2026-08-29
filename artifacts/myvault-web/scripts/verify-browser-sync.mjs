@@ -13,13 +13,6 @@ const secondPage = await context.newPage();
 
 try {
   await Promise.all([firstPage.goto(`${baseUrl}/settings`), secondPage.goto(`${baseUrl}/settings`)]);
-  await firstPage.evaluate(() => {
-    localStorage.setItem("myvault-google-drive-session", JSON.stringify({
-      accessToken: "account-isolation-fixture-token",
-      expiresAt: Date.now() + 3_600_000,
-      scope: "https://www.googleapis.com/auth/drive.file",
-    }));
-  });
   const accountA = "permission-account-a";
   const accountB = "permission-account-b";
   const bundleA = representativeAndroidBackup();
@@ -326,7 +319,10 @@ try {
   assert.equal(staleSessionGate.accountA, "permission-account-a");
   assert.equal(staleSessionGate.accountB, "permission-account-b");
   assert.match(staleSessionGate.staleError, /account changed/i);
-  await sessionPage.goto(`${isolatedBaseUrl.toString().replace(/\/$/, "")}/settings`);
+  await sessionPage.evaluate(() => {
+    history.pushState(null, "", "/settings");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  });
   await sessionPage.getByText("aah4x-test@example.com").waitFor();
   await sessionPage.getByTestId("restore-from-google-drive").click();
   const restoreConfirmation = await sessionPage.getByRole("alertdialog").textContent();

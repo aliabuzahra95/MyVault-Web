@@ -7,6 +7,94 @@ import { retryOnceAfterAuthFailure } from "../src/lib/googleDrive/authRetry";
 import { stageVerifiedMetadataRestore, sha256Blob } from "../src/lib/restore/verifiedDriveRestore";
 import type { DriveSyncManifest, DriveSyncManifestEntry } from "../src/lib/restore/driveManifestPreview";
 import { representativeAndroidBackup } from "./fixtures/representative-android-backup";
+import { handleGoogleDriveAuthRequest } from "../../../api/_googleDriveSession";
+
+const originalFetch = globalThis.fetch;
+const originalEnvironment = {
+  clientId: process.env.GOOGLE_OAUTH_CLIENT_ID,
+  clientSecret: process.env.GOOGLE_OAUTH_CLIENT_SECRET,
+  sessionSecret: process.env.MYVAULT_GOOGLE_SESSION_SECRET,
+};
+process.env.GOOGLE_OAUTH_CLIENT_ID = "test-client.apps.googleusercontent.com";
+process.env.GOOGLE_OAUTH_CLIENT_SECRET = "test-client-secret";
+process.env.MYVAULT_GOOGLE_SESSION_SECRET = "test-session-secret-that-is-longer-than-32-characters";
+
+let refreshedAccountId = "permission-account-a";
+let tokenError: string | null = null;
+globalThis.fetch = async (input, init) => {
+  const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+  if (url === "https://oauth2.googleapis.com/token") {
+    if (tokenError) {
+      return Response.json({ error: tokenError, error_description: "The durable grant is no longer valid." }, { status: 400 });
+    }
+    const form = new URLSearchParams(init?.body?.toString());
+    if (form.get("grant_type") === "authorization_code") {
+      assert.equal(form.get("redirect_uri"), "postmessage");
+      return Response.json({
+        access_token: "initial-access-token",
+        expires_in: 3600,
+        refresh_token: "server-only-refresh-token",
+        scope: "https://www.googleapis.com/auth/drive.file",
+      });
+    }
+    assert.equal(form.get("refresh_token"), "server-only-refresh-token");
+    return Response.json({
+      access_token: "renewed-access-token",
+      expires_in: 3600,
+      scope: "https://www.googleapis.com/auth/drive.file",
+    });
+  }
+  if (url.startsWith("https://www.googleapis.com/drive/v3/about")) {
+    return Response.json({ user: { permissionId: refreshedAccountId } });
+  }
+  throw new Error(`Unexpected authentication fetch: ${url}`);
+};
+
+try {
+  const connectResponse = await handleGoogleDriveAuthRequest(new Request("http://localhost/api/google-drive-auth", {
+    method: "POST",
+    headers: { origin: "http://localhost", "content-type": "application/json" },
+    body: JSON.stringify({ code: "authorization-code" }),
+  }));
+  assert.equal(connectResponse.status, 200);
+  const connectBody = await connectResponse.json() as Record<string, unknown>;
+  assert.equal(connectBody.accessToken, "initial-access-token");
+  assert.equal(connectBody.accountId, "permission-account-a");
+  assert.equal("refreshToken" in connectBody, false, "The refresh credential must never reach browser JavaScript.");
+  const sessionCookie = connectResponse.headers.get("set-cookie");
+  assert.ok(sessionCookie?.includes("HttpOnly"));
+  assert.ok(sessionCookie?.includes("SameSite=Lax"));
+  assert.equal(sessionCookie?.includes("server-only-refresh-token"), false, "The cookie must contain only sealed session data.");
+  const cookieValue = sessionCookie!.split(";")[0];
+
+  const restoredResponse = await handleGoogleDriveAuthRequest(new Request("http://localhost/api/google-drive-auth", {
+    headers: { origin: "http://localhost", cookie: cookieValue },
+  }));
+  assert.equal(restoredResponse.status, 200);
+  const restoredBody = await restoredResponse.json() as Record<string, unknown>;
+  assert.equal(restoredBody.accessToken, "renewed-access-token");
+  assert.equal(restoredBody.accountId, "permission-account-a");
+
+  refreshedAccountId = "permission-account-b";
+  const mismatchResponse = await handleGoogleDriveAuthRequest(new Request("http://localhost/api/google-drive-auth", {
+    headers: { origin: "http://localhost", cookie: cookieValue },
+  }));
+  assert.equal(mismatchResponse.status, 401);
+  assert.match(mismatchResponse.headers.get("set-cookie") ?? "", /Max-Age=0/);
+
+  refreshedAccountId = "permission-account-a";
+  tokenError = "invalid_grant";
+  const invalidGrantResponse = await handleGoogleDriveAuthRequest(new Request("http://localhost/api/google-drive-auth", {
+    headers: { origin: "http://localhost", cookie: cookieValue },
+  }));
+  assert.equal(invalidGrantResponse.status, 401);
+  assert.match(invalidGrantResponse.headers.get("set-cookie") ?? "", /Max-Age=0/);
+} finally {
+  globalThis.fetch = originalFetch;
+  process.env.GOOGLE_OAUTH_CLIENT_ID = originalEnvironment.clientId;
+  process.env.GOOGLE_OAUTH_CLIENT_SECRET = originalEnvironment.clientSecret;
+  process.env.MYVAULT_GOOGLE_SESSION_SECRET = originalEnvironment.sessionSecret;
+}
 
 assert.equal(getGoogleDriveStartupAction({ configured: false, hasUsableToken: false, previouslyAuthorized: false }), "setup-needed");
 assert.equal(getGoogleDriveStartupAction({ configured: true, hasUsableToken: true, previouslyAuthorized: true }), "validate-token");

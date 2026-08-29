@@ -10,12 +10,16 @@ export type GoogleDriveToken = {
   scope: string;
 };
 
-type GoogleTokenResponse = {
-  access_token?: string;
-  expires_in?: number;
-  scope?: string;
+type GoogleCodeResponse = {
+  code?: string;
   error?: string;
   error_description?: string;
+};
+
+type GoogleDriveServerSession = GoogleDriveToken & {
+  accountId: string;
+  error?: string;
+  interactionRequired?: boolean;
 };
 
 export type GoogleDriveAuthFailureKind = "interaction-required" | "network" | "configuration" | "unknown";
@@ -27,27 +31,24 @@ export class GoogleDriveAuthError extends Error {
   }
 }
 
-type GoogleTokenClient = {
-  requestAccessToken: (overrideConfig?: { prompt?: "" | "consent" | "select_account" }) => void;
-};
+type GoogleCodeClient = { requestCode: () => void };
 
 type GoogleOAuth2Api = {
-  initTokenClient: (config: {
+  initCodeClient: (config: {
     client_id: string;
     scope: string;
-    callback: (response: GoogleTokenResponse) => void;
+    ux_mode: "popup";
+    access_type: "offline";
+    include_granted_scopes: boolean;
+    prompt?: "consent" | "select_account";
+    callback: (response: GoogleCodeResponse) => void;
     error_callback?: (error: unknown) => void;
-  }) => GoogleTokenClient;
-  revoke?: (accessToken: string, done?: () => void) => void;
+  }) => GoogleCodeClient;
 };
 
 declare global {
   interface Window {
-    google?: {
-      accounts?: {
-        oauth2?: GoogleOAuth2Api;
-      };
-    };
+    google?: { accounts?: { oauth2?: GoogleOAuth2Api } };
   }
 }
 
@@ -56,8 +57,9 @@ const runTokenRequest = createSingleFlight<GoogleDriveToken>();
 let accountSelectionGeneration = 0;
 let cachedToken: GoogleDriveToken | null = null;
 const LEGACY_SESSION_TOKEN_KEY = "myvault-google-drive-token";
-const SHARED_TOKEN_KEY = "myvault-google-drive-session";
+const LEGACY_SHARED_TOKEN_KEY = "myvault-google-drive-session";
 const AUTHORIZATION_KEY = "myvault-google-drive-authorized";
+const SESSION_VERSION_KEY = "myvault-google-drive-session-version";
 const SESSION_CHANGE_EVENT = "myvault-google-drive-session-changed";
 
 type GoogleDriveTokenRequestOptions = {
@@ -70,94 +72,67 @@ export function hasGoogleClientId() {
   return GOOGLE_CLIENT_ID.length > 0;
 }
 
-export function getCachedGoogleDriveToken() {
-  if (typeof window === "undefined") return null;
-
-  try {
-    // localStorage is the cross-tab source of truth. Reading the module cache
-    // first can leave an older tab using account A briefly after another tab
-    // has selected account B.
-    const stored = localStorage.getItem(SHARED_TOKEN_KEY) ?? sessionStorage.getItem(LEGACY_SESSION_TOKEN_KEY);
-    if (!stored) {
-      cachedToken = null;
-      return null;
-    }
-    const parsed = JSON.parse(stored) as GoogleDriveToken;
-    if (typeof parsed.accessToken !== "string" || typeof parsed.expiresAt !== "number" || parsed.expiresAt - Date.now() <= 60000) {
-      clearCachedGoogleDriveToken();
-      return null;
-    }
-    cachedToken = parsed;
-    localStorage.setItem(SHARED_TOKEN_KEY, JSON.stringify(parsed));
-    sessionStorage.removeItem(LEGACY_SESSION_TOKEN_KEY);
-    return parsed;
-  } catch {
-    clearCachedGoogleDriveToken();
-    return null;
-  }
+function removeLegacyBrowserTokens() {
+  if (typeof window === "undefined") return;
+  localStorage.removeItem(LEGACY_SHARED_TOKEN_KEY);
+  sessionStorage.removeItem(LEGACY_SESSION_TOKEN_KEY);
 }
 
-function parseStoredGoogleDriveToken(value: string | null) {
-  if (!value) return null;
-  try {
-    const parsed = JSON.parse(value) as GoogleDriveToken;
-    return typeof parsed.accessToken === "string"
-      && typeof parsed.expiresAt === "number"
-      && parsed.expiresAt - Date.now() > 60000
-      ? parsed
-      : null;
-  } catch {
+export function getCachedGoogleDriveToken() {
+  if (typeof window === "undefined") return null;
+  removeLegacyBrowserTokens();
+  if (!cachedToken || cachedToken.expiresAt - Date.now() <= 60000) {
+    cachedToken = null;
     return null;
   }
+  return cachedToken;
 }
 
 if (typeof window !== "undefined") {
+  removeLegacyBrowserTokens();
   window.addEventListener("storage", (event) => {
-    if (event.key !== SHARED_TOKEN_KEY) return;
-    cachedToken = parseStoredGoogleDriveToken(event.newValue);
+    if (event.key !== SESSION_VERSION_KEY) return;
+    cachedToken = null;
     window.dispatchEvent(new Event(SESSION_CHANGE_EVENT));
   });
 }
 
-export function rememberGoogleDriveToken(token: GoogleDriveToken) {
+function notifySessionChanged(broadcast: boolean) {
+  if (typeof window === "undefined") return;
+  if (broadcast) localStorage.setItem(SESSION_VERSION_KEY, crypto.randomUUID());
+  window.dispatchEvent(new Event(SESSION_CHANGE_EVENT));
+}
+
+export function rememberGoogleDriveToken(token: GoogleDriveToken, options: { broadcast?: boolean } = {}) {
   cachedToken = token;
   if (typeof window !== "undefined") {
-    localStorage.setItem(SHARED_TOKEN_KEY, JSON.stringify(token));
     localStorage.setItem(AUTHORIZATION_KEY, "true");
-    sessionStorage.removeItem(LEGACY_SESSION_TOKEN_KEY);
-    window.dispatchEvent(new Event(SESSION_CHANGE_EVENT));
+    removeLegacyBrowserTokens();
+    if (options.broadcast === true) notifySessionChanged(true);
   }
   return token;
 }
 
-export function clearCachedGoogleDriveToken() {
+export function clearCachedGoogleDriveToken(options: { broadcast?: boolean } = {}) {
   cachedToken = null;
   if (typeof window === "undefined") return;
-  localStorage.removeItem(SHARED_TOKEN_KEY);
-  sessionStorage.removeItem(LEGACY_SESSION_TOKEN_KEY);
-  window.dispatchEvent(new Event(SESSION_CHANGE_EVENT));
+  removeLegacyBrowserTokens();
+  if (options.broadcast === true) notifySessionChanged(true);
 }
 
-export async function disconnectGoogleDrive(options: { revoke?: boolean } = {}) {
-  const token = getCachedGoogleDriveToken();
-  clearCachedGoogleDriveToken();
-
-  if (typeof window !== "undefined") {
-    localStorage.removeItem(AUTHORIZATION_KEY);
-    localStorage.removeItem("myvault-google-drive-profile");
-  }
-
-  if (!options.revoke || !token) {
-    return;
-  }
-
+export async function disconnectGoogleDrive(_options: { revoke?: boolean } = {}) {
   try {
-    await loadGoogleIdentityScript();
-    const revoke = window.google?.accounts?.oauth2?.revoke;
-    if (!revoke) return;
-    await new Promise<void>((resolve) => revoke(token.accessToken, resolve));
-  } catch {
-    // The local session is already disconnected even if Google cannot be reached.
+    await fetch("/api/google-drive-auth", {
+      method: "DELETE",
+      credentials: "same-origin",
+      headers: { accept: "application/json" },
+    });
+  } finally {
+    clearCachedGoogleDriveToken({ broadcast: true });
+    if (typeof window !== "undefined") {
+      localStorage.removeItem(AUTHORIZATION_KEY);
+      localStorage.removeItem("myvault-google-drive-profile");
+    }
   }
 }
 
@@ -179,11 +154,14 @@ function authErrorFrom(value: unknown, fallback: string) {
     "popup_closed",
     "popup_failed_to_open",
     "popup may have been closed",
+    "needs to be restored",
+    "connect again",
   ].some((marker) => normalized.includes(marker));
   const network = normalized.includes("network") || normalized.includes("failed to fetch");
+  const configuration = normalized.includes("server authentication needs");
   return new GoogleDriveAuthError(
     interactionRequired ? "Reconnect Google Drive to continue." : source,
-    interactionRequired ? "interaction-required" : network ? "network" : "unknown",
+    interactionRequired ? "interaction-required" : network ? "network" : configuration ? "configuration" : "unknown",
     value,
   );
 }
@@ -198,31 +176,22 @@ function waitForExistingScript(script: HTMLScriptElement) {
       resolve();
       return;
     }
-
     script.addEventListener("load", () => resolve(), { once: true });
     script.addEventListener("error", () => reject(new Error("Google Identity script could not be loaded.")), { once: true });
   });
 }
 
 export function loadGoogleIdentityScript() {
-  if (isGoogleIdentityReady()) {
-    return Promise.resolve();
-  }
-
-  if (scriptLoadPromise) {
-    return scriptLoadPromise;
-  }
-
+  if (isGoogleIdentityReady()) return Promise.resolve();
+  if (scriptLoadPromise) return scriptLoadPromise;
   if (typeof document === "undefined") {
     return Promise.reject(new Error("Google sign-in can only run in a browser."));
   }
-
   const existingScript = document.querySelector<HTMLScriptElement>(`script[src="${GOOGLE_IDENTITY_SCRIPT_SRC}"]`);
   if (existingScript) {
     scriptLoadPromise = waitForExistingScript(existingScript);
     return scriptLoadPromise;
   }
-
   scriptLoadPromise = new Promise<void>((resolve, reject) => {
     const script = document.createElement("script");
     script.src = GOOGLE_IDENTITY_SCRIPT_SRC;
@@ -233,8 +202,101 @@ export function loadGoogleIdentityScript() {
     script.addEventListener("error", () => reject(new Error("Google Identity script could not be loaded.")), { once: true });
     document.head.appendChild(script);
   });
-
   return scriptLoadPromise;
+}
+
+async function parseServerSession(response: Response) {
+  const payload = await response.json().catch(() => ({})) as Partial<GoogleDriveServerSession>;
+  if (!response.ok || typeof payload.accessToken !== "string" || typeof payload.expiresAt !== "number" || typeof payload.scope !== "string") {
+    const message = typeof payload.error === "string" ? payload.error : "Google Drive session could not be restored.";
+    throw new GoogleDriveAuthError(
+      payload.interactionRequired || response.status === 401 ? "Reconnect Google Drive to continue." : message,
+      payload.interactionRequired || response.status === 401
+        ? "interaction-required"
+        : response.status === 503
+          ? "configuration"
+          : "unknown",
+      payload,
+    );
+  }
+  return {
+    accessToken: payload.accessToken,
+    expiresAt: payload.expiresAt,
+    scope: payload.scope,
+  } satisfies GoogleDriveToken;
+}
+
+async function restoreServerSession() {
+  let response: Response;
+  try {
+    response = await fetch("/api/google-drive-auth", {
+      method: "GET",
+      credentials: "same-origin",
+      headers: { accept: "application/json" },
+    });
+  } catch (error) {
+    throw authErrorFrom(error, "Google Drive session could not be restored.");
+  }
+  return rememberGoogleDriveToken(await parseServerSession(response));
+}
+
+async function requestAuthorizationCode(selectAccount: boolean) {
+  await loadGoogleIdentityScript();
+  const oauth2 = window.google?.accounts?.oauth2;
+  if (!oauth2) throw new Error("Google sign-in is not ready yet. Please try again.");
+  return new Promise<string>((resolve, reject) => {
+    let settled = false;
+    const timeoutId = window.setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        reject(authErrorFrom("Google sign-in did not finish. The popup may have been closed.", "Google sign-in did not finish."));
+      }
+    }, 120000);
+    const finish = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeoutId);
+      callback();
+    };
+    const client = oauth2.initCodeClient({
+      client_id: GOOGLE_CLIENT_ID,
+      scope: GOOGLE_DRIVE_SCOPE,
+      ux_mode: "popup",
+      access_type: "offline",
+      include_granted_scopes: true,
+      prompt: selectAccount ? "select_account" : "consent",
+      callback: (response) => finish(() => {
+        if (response.error) {
+          reject(authErrorFrom(response.error_description || response.error, "Google sign-in failed."));
+        } else if (!response.code) {
+          reject(new Error("Google did not return an authorization code."));
+        } else {
+          resolve(response.code);
+        }
+      }),
+      error_callback: (error) => finish(() => reject(authErrorFrom(error, "Google sign-in failed."))),
+    });
+    try {
+      client.requestCode();
+    } catch (error) {
+      finish(() => reject(authErrorFrom(error, "Google sign-in could not start.")));
+    }
+  });
+}
+
+async function exchangeAuthorizationCode(code: string) {
+  let response: Response;
+  try {
+    response = await fetch("/api/google-drive-auth", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify({ code }),
+    });
+  } catch (error) {
+    throw authErrorFrom(error, "Google Drive connection could not be completed.");
+  }
+  return parseServerSession(response);
 }
 
 export async function requestGoogleDriveToken(options: GoogleDriveTokenRequestOptions = {}): Promise<GoogleDriveToken> {
@@ -246,72 +308,23 @@ export async function requestGoogleDriveToken(options: GoogleDriveTokenRequestOp
 
   const selectionGeneration = accountSelectionGeneration;
   const token = await runTokenRequest(async () => {
-    await loadGoogleIdentityScript();
-
-    const oauth2 = window.google?.accounts?.oauth2;
-    if (!oauth2) {
-      throw new Error("Google sign-in is not ready yet. Please try again.");
-    }
-
-    const shouldSelectAccount = options.selectAccount || (options.interactive !== false && !hasPreviousGoogleDriveAuthorization());
-    const result = await new Promise<GoogleDriveToken>((resolve, reject) => {
-      let settled = false;
-      const timeoutId = window.setTimeout(() => {
-        if (!settled) {
-          settled = true;
-          reject(authErrorFrom("Google sign-in did not finish. The popup may have been closed.", "Google sign-in did not finish."));
-        }
-      }, 120000);
-
-      const finish = (callback: () => void) => {
-        if (settled) {
-          return;
-        }
-
-        settled = true;
-        window.clearTimeout(timeoutId);
-        callback();
-      };
-
-      const client = oauth2.initTokenClient({
-        client_id: GOOGLE_CLIENT_ID,
-        scope: GOOGLE_DRIVE_SCOPE,
-        callback: (response) => {
-          finish(() => {
-            if (response.error) {
-              reject(authErrorFrom(response.error_description || response.error, "Google sign-in failed."));
-              return;
-            }
-
-            if (!response.access_token) {
-              reject(new Error("Google did not return an access token."));
-              return;
-            }
-
-            const expiresInSeconds = response.expires_in ?? 3600;
-            resolve(rememberGoogleDriveToken({
-              accessToken: response.access_token,
-              expiresAt: Date.now() + expiresInSeconds * 1000,
-              scope: response.scope ?? GOOGLE_DRIVE_SCOPE,
-            }));
-          });
-        },
-        error_callback: (error) => {
-          finish(() => reject(authErrorFrom(error, "Google sign-in failed.")));
-        },
-      });
-
+    const shouldSelectAccount = options.selectAccount === true;
+    const previouslyAuthorized = hasPreviousGoogleDriveAuthorization();
+    if (!shouldSelectAccount && previouslyAuthorized) {
       try {
-        client.requestAccessToken({ prompt: shouldSelectAccount ? "select_account" : "" });
+        return await restoreServerSession();
       } catch (error) {
-        finish(() => reject(authErrorFrom(error, "Google sign-in could not start.")));
+        if (options.interactive === false || !isGoogleDriveInteractionRequired(error)) throw error;
       }
-    });
-    if (shouldSelectAccount) accountSelectionGeneration += 1;
-    return result;
+    }
+    if (options.interactive === false) {
+      throw new GoogleDriveAuthError("Reconnect Google Drive to continue.", "interaction-required");
+    }
+    accountSelectionGeneration += 1;
+    const code = await requestAuthorizationCode(shouldSelectAccount);
+    return rememberGoogleDriveToken(await exchangeAuthorizationCode(code), { broadcast: true });
   });
-  // If an explicit account switch joined an already-running silent renewal,
-  // run the chooser once that renewal has settled instead of accepting its account.
+
   if (options.selectAccount && accountSelectionGeneration === selectionGeneration) {
     return requestGoogleDriveToken(options);
   }
