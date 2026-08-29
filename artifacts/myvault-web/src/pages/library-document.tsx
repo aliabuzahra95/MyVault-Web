@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Component, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ErrorInfo, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useLocation, useParams } from "wouter";
 import { getGetAttachmentQueryKey, getListAttachmentsQueryKey, useGetAttachment } from "@workspace/api-client-react";
@@ -47,10 +47,33 @@ const PdfDocumentViewer = lazy(() =>
 
 type ReaderStatus = "idle" | "connecting" | "locating" | "downloading" | "ready" | "error";
 
-const pdfSessionCache = new Map<string, Blob>();
+class PdfReaderErrorBoundary extends Component<{ children: ReactNode; resetKey: string }, { error: Error | null }> {
+  state = { error: null as Error | null };
 
-function pdfSessionCacheKey(attachment: Attachment) {
-  return attachment.id;
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+
+  componentDidCatch(error: Error, details: ErrorInfo) {
+    console.error("PDF reader error was contained.", error, details.componentStack);
+  }
+
+  componentDidUpdate(previous: Readonly<{ children: ReactNode; resetKey: string }>) {
+    if (previous.resetKey !== this.props.resetKey && this.state.error) this.setState({ error: null });
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <section className="flex min-h-[60vh] flex-col items-center justify-center rounded-lg bg-white/70 px-6 text-center shadow-[0_1px_3px_rgba(15,23,42,0.04)]">
+          <FileText className="h-10 w-10 text-sky-700" />
+          <h2 className="mt-4 text-base font-semibold text-slate-800">This PDF could not be displayed.</h2>
+          <p className="mt-2 max-w-lg text-sm leading-6 text-slate-500">Close this document and try opening it again. MyVault itself is still available.</p>
+        </section>
+      );
+    }
+    return this.props.children;
+  }
 }
 
 function formatBytes(bytes: number | null | undefined) {
@@ -254,7 +277,6 @@ export default function LibraryDocumentPage() {
       setStatus("downloading");
       const blob = await downloadDriveFileBlob(token.accessToken, manifestEntry.cloudFileId, attachment.mimeType);
       assertGoogleDriveSession(token, accountId);
-      pdfSessionCache.set(pdfSessionCacheKey(attachment), blob);
       void saveLocalAttachmentBlob(attachment.id, blob).catch(() => undefined);
       const nextUrl = URL.createObjectURL(blob);
       if (activeAttachmentId.current !== requestedAttachmentId) {
@@ -300,24 +322,10 @@ export default function LibraryDocumentPage() {
     checkedLocalAttachmentId.current = attachment.id;
     let cancelled = false;
 
-    const cachedBlob = pdfSessionCache.get(pdfSessionCacheKey(attachment));
-    if (cachedBlob) {
-      const nextUrl = URL.createObjectURL(cachedBlob);
-      setFileUrl((current) => {
-        if (current) URL.revokeObjectURL(current);
-        return nextUrl;
-      });
-      setStatus("ready");
-      return () => {
-        cancelled = true;
-      };
-    }
-
     void loadLocalAttachmentBlob(attachment.id)
       .then((blob) => {
         if (cancelled) return;
         if (blob) {
-          pdfSessionCache.set(pdfSessionCacheKey(attachment), blob);
           const nextUrl = URL.createObjectURL(blob);
           setFileUrl((current) => {
             if (current) URL.revokeObjectURL(current);
@@ -376,21 +384,23 @@ export default function LibraryDocumentPage() {
       </header>
 
       {fileUrl && isPdf && readerStateLoaded && annotationChangesLoaded ? (
-        <Suspense fallback={<Skeleton className="h-[calc(100vh-150px)] min-h-[620px] w-full rounded-lg" />}>
-          <PdfDocumentViewer
-            key={attachment.id}
-            attachmentId={attachment.id}
-            fileUrl={fileUrl}
-            fileName={attachment.name}
-            initialPageIndex={initialReaderState?.pageIndex ?? 0}
-            initialZoom={initialReaderState?.zoom ?? 1}
-            annotations={annotations}
-            libraryFolderId={attachment.libraryFolderId}
-            onReadingProgressChange={handleReadingProgressChange}
-            onUpsertAnnotation={handleUpsertAnnotation}
-            onDeleteAnnotation={handleDeleteAnnotation}
-          />
-        </Suspense>
+        <PdfReaderErrorBoundary resetKey={`${attachment.id}:${fileUrl}`}>
+          <Suspense fallback={<Skeleton className="h-[calc(100vh-150px)] min-h-[620px] w-full rounded-lg" />}>
+            <PdfDocumentViewer
+              key={attachment.id}
+              attachmentId={attachment.id}
+              fileUrl={fileUrl}
+              fileName={attachment.name}
+              initialPageIndex={initialReaderState?.pageIndex ?? 0}
+              initialZoom={initialReaderState?.zoom ?? 1}
+              annotations={annotations}
+              libraryFolderId={attachment.libraryFolderId}
+              onReadingProgressChange={handleReadingProgressChange}
+              onUpsertAnnotation={handleUpsertAnnotation}
+              onDeleteAnnotation={handleDeleteAnnotation}
+            />
+          </Suspense>
+        </PdfReaderErrorBoundary>
       ) : fileUrl && isPdf ? (
         <Skeleton className="h-[calc(100vh-150px)] min-h-[620px] w-full rounded-lg" />
       ) : fileUrl ? (
