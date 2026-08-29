@@ -223,5 +223,11 @@ const panelSource = await readFile(`${projectRoot}/src/components/settings/googl
 assert.equal(panelSource.includes("clearLocalWorkspaceData"), false, "Drive disconnect/account switch must not delete the local vault.");
 const accountSource = await readFile(`${projectRoot}/src/lib/sync/accountContext.ts`, "utf8");
 assert.equal(accountSource.includes("if (!hasUsableDriveSession()) return LOCAL_ACCOUNT_ID"), false, "Token expiry must not discard the remembered account namespace.");
+const mockFetcherSource = await readFile(`${projectRoot}/src/mocks/mockFetcher.ts`, "utf8");
+assert.equal(
+  mockFetcherSource.includes('path.replace(/\\?.*/, "") === "/api/google-drive-auth"'),
+  true,
+  "The real Drive auth endpoint must bypass the demo-data API interceptor.",
+);
 
 console.log("Drive auth and restore contract verified: renewal is single-flight, disconnect is intentional, and corrupt restores fail before apply.");

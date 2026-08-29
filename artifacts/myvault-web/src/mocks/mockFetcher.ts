@@ -79,6 +79,9 @@ export function installMockFetcher(): void {
     if (!path.startsWith("/api")) {
       return originalFetch(input, init);
     }
+    if (path.replace(/\?.*/, "") === "/api/google-drive-auth") {
+      return originalFetch(input, init);
+    }
 
     const apiPath = path.replace(/\?.*/, "").replace(/^\/api/, "");
     const restoredCorpus = await loadRestoredCorpus().catch(() => null);
