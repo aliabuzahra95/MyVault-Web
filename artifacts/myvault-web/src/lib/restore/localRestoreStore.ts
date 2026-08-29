@@ -440,6 +440,32 @@ export function loadLocalSyncBase() {
   return getForAccount<LocalSyncBase>(SYNC_BASE_STORE, "base");
 }
 
+export function applyMetadataRestoreAtomically(bundle: MetadataRestoreBundle, base: LocalSyncBase) {
+  const accountId = getActiveAccountId();
+  return new Promise<void>((resolve, reject) => {
+    void openRestoreDatabase().then((database) => {
+      const transaction = database.transaction([METADATA_STORE, SYNC_BASE_STORE], "readwrite");
+      transaction.objectStore(METADATA_STORE).put(bundle, accountStorageKey(CURRENT_METADATA_KEY, accountId));
+      transaction.objectStore(SYNC_BASE_STORE).put(base, accountStorageKey("base", accountId));
+      transaction.oncomplete = () => {
+        database.close();
+        if (typeof window !== "undefined") window.dispatchEvent(new Event("myvault-restored-corpus-changed"));
+        resolve();
+      };
+      transaction.onerror = () => {
+        const error = transaction.error ?? new Error("The validated restore could not be applied. The previous local vault was preserved.");
+        database.close();
+        reject(error);
+      };
+      transaction.onabort = () => {
+        const error = transaction.error ?? new Error("The validated restore was cancelled. The previous local vault was preserved.");
+        database.close();
+        reject(error);
+      };
+    }).catch(reject);
+  });
+}
+
 export function saveLocalSyncConflict(conflict: LocalSyncConflict) {
   return putForAccount(SYNC_CONFLICT_STORE, conflict.id, conflict);
 }

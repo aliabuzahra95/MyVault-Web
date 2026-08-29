@@ -166,6 +166,8 @@ function getConnectionBadge(status: GoogleDriveConnectionStatus) {
     case "setup-needed":
       return { label: "Setup needed", className: "border-amber-200 bg-amber-50 text-amber-700" };
     case "connecting":
+    case "initializing":
+    case "renewing":
     case "scanning":
     case "reading-manifest":
       return { label: "Working", className: "border-sky-200 bg-sky-50 text-sky-700" };
@@ -183,7 +185,9 @@ function getConnectionBadge(status: GoogleDriveConnectionStatus) {
       return { label: "Metadata restored", className: "border-emerald-200 bg-emerald-50 text-emerald-700" };
     case "error":
       return { label: "Needs attention", className: "border-red-200 bg-red-50 text-red-700" };
-    case "idle":
+    case "reauth-required":
+      return { label: "Reconnect required", className: "border-amber-200 bg-amber-50 text-amber-700" };
+    case "disconnected":
       return { label: "Not connected", className: "border-slate-200 bg-slate-50 text-slate-600" };
   }
 }

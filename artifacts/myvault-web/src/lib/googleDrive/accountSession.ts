@@ -1,7 +1,13 @@
-import { getDriveUserProfile, type DriveUserProfile } from "@/lib/googleDrive/driveClient";
-import { getCachedGoogleDriveToken, type GoogleDriveToken } from "@/lib/googleDrive/identity";
+import { getDriveUserProfile, isGoogleDriveAuthorizationError, type DriveUserProfile } from "@/lib/googleDrive/driveClient";
+import {
+  getCachedGoogleDriveToken,
+  hasPreviousGoogleDriveAuthorization,
+  requestGoogleDriveToken,
+  type GoogleDriveToken,
+} from "@/lib/googleDrive/identity";
 import { prepareAccountStorage } from "@/lib/restore/localRestoreStore";
 import { getActiveAccountId, setActiveGoogleAccount } from "@/lib/sync/accountContext";
+import { retryOnceAfterAuthFailure } from "@/lib/googleDrive/authRetry";
 
 export type VerifiedGoogleDriveSession = {
   accountId: string;
@@ -49,4 +55,41 @@ export function verifyAndActivateGoogleDriveSession(token: GoogleDriveToken): Pr
     .then(() => performSessionActivation(token));
   activationQueue = activation.then(() => undefined, () => undefined);
   return activation;
+}
+
+export async function acquireVerifiedGoogleDriveSession(options: { interactive?: boolean; forceRefresh?: boolean } = {}) {
+  const cached = options.forceRefresh ? null : getCachedGoogleDriveToken();
+  if (!cached && options.interactive === false && !hasPreviousGoogleDriveAuthorization()) {
+    throw new Error("Reconnect Google Drive to continue.");
+  }
+  const token = cached ?? await requestGoogleDriveToken({
+    forceRefresh: options.forceRefresh ?? true,
+    interactive: options.interactive,
+  });
+  return verifyAndActivateGoogleDriveSession(token);
+}
+
+export async function runWithVerifiedGoogleDriveSession<T>(
+  operation: (session: VerifiedGoogleDriveSession) => Promise<T>,
+  options: { interactive?: boolean; onRenewing?: () => void } = {},
+) {
+  let session: VerifiedGoogleDriveSession;
+  try {
+    session = await acquireVerifiedGoogleDriveSession({ interactive: options.interactive });
+  } catch (error) {
+    if (!isGoogleDriveAuthorizationError(error)) throw error;
+    options.onRenewing?.();
+    session = await acquireVerifiedGoogleDriveSession({ interactive: false, forceRefresh: true });
+  }
+  const result = await retryOnceAfterAuthFailure({
+    session,
+    operation,
+    isAuthorizationError: isGoogleDriveAuthorizationError,
+    renew: async () => {
+      options.onRenewing?.();
+      session = await acquireVerifiedGoogleDriveSession({ interactive: false, forceRefresh: true });
+      return session;
+    },
+  });
+  return { session: result.session, value: result.value };
 }

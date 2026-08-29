@@ -15,9 +15,10 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { getCachedGoogleDriveToken, hasGoogleClientId } from "@/lib/googleDrive/identity";
+import { hasGoogleClientId } from "@/lib/googleDrive/identity";
 import { KnowledgeNavigator } from "@/components/navigation/knowledge-navigator";
 import { useGoogleDriveProfile } from "@/hooks/useGoogleDriveProfile";
+import { useGoogleDriveConnection } from "@/hooks/useGoogleDriveConnection";
 
 const applicationNavItems = [
   { path: "/", label: "Dashboard", icon: Home },
@@ -78,7 +79,9 @@ function ProfileHeader() {
 
 function SidebarContent({ closeMobile, collapseDesktop }: { closeMobile?: () => void; collapseDesktop?: () => void }) {
   const googleConfigured = hasGoogleClientId();
-  const [driveConnected, setDriveConnected] = useState(() => Boolean(getCachedGoogleDriveToken()));
+  const drive = useGoogleDriveConnection();
+  const driveConnected = Boolean(drive.token && drive.accountId);
+  const driveChecking = drive.status === "initializing" || drive.status === "renewing";
   const [searchActive, setSearchActive] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -99,12 +102,6 @@ function SidebarContent({ closeMobile, collapseDesktop }: { closeMobile?: () => 
     document.addEventListener("pointerdown", handlePointerDown);
     return () => document.removeEventListener("pointerdown", handlePointerDown);
   }, [searchActive]);
-
-  useEffect(() => {
-    const refreshDriveStatus = () => setDriveConnected(Boolean(getCachedGoogleDriveToken()));
-    window.addEventListener("myvault-google-drive-session-changed", refreshDriveStatus);
-    return () => window.removeEventListener("myvault-google-drive-session-changed", refreshDriveStatus);
-  }, []);
 
   return (
     <>
@@ -177,7 +174,7 @@ function SidebarContent({ closeMobile, collapseDesktop }: { closeMobile?: () => 
           <Link href="/settings" className="flex min-w-0 flex-1 items-center gap-2" onClick={closeMobile}>
             <Cloud className="h-4 w-4 shrink-0" />
             <span className="truncate text-[11px] font-medium">
-              Drive {driveConnected ? "connected" : googleConfigured ? "not connected" : "needs setup"}
+              Drive {driveConnected ? "connected" : driveChecking ? "checking" : googleConfigured ? "not connected" : "needs setup"}
             </span>
             <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", driveConnected ? "bg-emerald-600" : "bg-muted-foreground/55")} />
           </Link>

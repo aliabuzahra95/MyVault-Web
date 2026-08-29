@@ -53,6 +53,19 @@ export function isGoogleDriveAuthorizationError(error: unknown) {
   return error instanceof GoogleDriveRequestError && (error.status === 401 || error.status === 403);
 }
 
+const TRANSIENT_DRIVE_STATUSES = new Set([429, 500, 502, 503, 504]);
+
+async function fetchDriveWithRetry(url: string, init: RequestInit) {
+  const method = (init.method ?? "GET").toUpperCase();
+  const canRetry = method === "GET" || method === "HEAD";
+  let response = await fetch(url, init);
+  for (let attempt = 0; canRetry && attempt < 2 && TRANSIENT_DRIVE_STATUSES.has(response.status); attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 250 * 2 ** attempt));
+    response = await fetch(url, init);
+  }
+  return response;
+}
+
 function escapeDriveQueryValue(value: string) {
   return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
 }
@@ -62,7 +75,7 @@ async function driveFetch<T>(accessToken: string, path: string, init: RequestIni
   headers.set("Authorization", `Bearer ${accessToken}`);
   headers.set("Accept", "application/json");
 
-  const response = await fetch(`${DRIVE_API_BASE}${path}`, {
+  const response = await fetchDriveWithRetry(`${DRIVE_API_BASE}${path}`, {
     ...init,
     headers,
   });
@@ -85,7 +98,7 @@ async function driveMediaFetch(accessToken: string, path: string, init: RequestI
   const headers = new Headers(init.headers);
   headers.set("Authorization", `Bearer ${accessToken}`);
 
-  const response = await fetch(`${DRIVE_API_BASE}${path}`, {
+  const response = await fetchDriveWithRetry(`${DRIVE_API_BASE}${path}`, {
     ...init,
     headers,
   });

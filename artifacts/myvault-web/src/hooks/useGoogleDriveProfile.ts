@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import type { DriveUserProfile } from "@/lib/googleDrive/driveClient";
 import { getCachedGoogleDriveToken } from "@/lib/googleDrive/identity";
 import { verifyAndActivateGoogleDriveSession } from "@/lib/googleDrive/accountSession";
-import { clearActiveGoogleAccount } from "@/lib/sync/accountContext";
 
 const PROFILE_STORAGE_KEY = "myvault-google-drive-profile";
 
@@ -15,8 +14,6 @@ export function useGoogleDriveProfile() {
     const refreshProfile = () => {
       const token = getCachedGoogleDriveToken();
       if (!token) {
-        localStorage.removeItem(PROFILE_STORAGE_KEY);
-        clearActiveGoogleAccount();
         setProfile(null);
         return;
       }

@@ -6,31 +6,42 @@ import {
   disconnectGoogleDrive,
   getCachedGoogleDriveToken,
   hasGoogleClientId,
+  hasPreviousGoogleDriveAuthorization,
+  isGoogleDriveInteractionRequired,
   requestGoogleDriveToken,
   type GoogleDriveToken,
 } from "@/lib/googleDrive/identity";
-import { assertGoogleDriveSession, verifyAndActivateGoogleDriveSession } from "@/lib/googleDrive/accountSession";
+import {
+  assertGoogleDriveSession,
+  runWithVerifiedGoogleDriveSession,
+  verifyAndActivateGoogleDriveSession,
+} from "@/lib/googleDrive/accountSession";
 import {
   buildDriveManifestPreview,
   parseDriveSyncManifest,
   type DriveManifestPreview,
 } from "@/lib/restore/driveManifestPreview";
-import { buildMetadataRestoreBundle, getMetadataManifestEntries, type MetadataRestoreBundle } from "@/lib/restore/metadataRestore";
+import { type MetadataRestoreBundle } from "@/lib/restore/metadataRestore";
 import {
+  applyMetadataRestoreAtomically,
   createLocalRecoverySnapshot,
   hasPendingLocalChanges,
   loadLocalSyncBase,
   loadMetadataRestoreBundle,
   saveLocalSyncBase,
-  saveMetadataRestoreBundle,
 } from "@/lib/restore/localRestoreStore";
-import { clearActiveGoogleAccount, getActiveAccountId } from "@/lib/sync/accountContext";
+import { getActiveAccountId } from "@/lib/sync/accountContext";
 import { computeBundleRevision } from "@/lib/sync/revision";
+import { stageVerifiedMetadataRestore, verifyDriveManifestFiles } from "@/lib/restore/verifiedDriveRestore";
+import { getGoogleDriveStartupAction } from "@/lib/googleDrive/authPolicy";
 
 export type GoogleDriveConnectionStatus =
   | "setup-needed"
-  | "idle"
+  | "initializing"
+  | "disconnected"
   | "connecting"
+  | "renewing"
+  | "reauth-required"
   | "connected"
   | "no-backup"
   | "scanning"
@@ -54,7 +65,7 @@ type ConnectionState = {
 function createInitialState(): ConnectionState {
   const token = getCachedGoogleDriveToken();
   return {
-    status: token ? "connected" : hasGoogleClientId() ? "idle" : "setup-needed",
+    status: hasGoogleClientId() ? "initializing" : "setup-needed",
     token,
     accountId: null,
     scan: null,
@@ -66,14 +77,6 @@ function createInitialState(): ConnectionState {
 
 function getErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : "Something went wrong while talking to Google Drive.";
-}
-
-function tokenNeedsRefresh(token: GoogleDriveToken | null) {
-  if (!token) {
-    return true;
-  }
-
-  return token.expiresAt - Date.now() < 60000;
 }
 
 async function readDriveManifestPreview(accessToken: string) {
@@ -122,25 +125,55 @@ export function useGoogleDriveConnection() {
     let cancelled = false;
     let refreshId = 0;
 
-    const refreshSession = () => {
+    const refreshSession = async () => {
       const currentRefreshId = ++refreshId;
-      const token = getCachedGoogleDriveToken();
-      if (!token) {
-        clearActiveGoogleAccount();
+      let token = getCachedGoogleDriveToken();
+      const startupAction = getGoogleDriveStartupAction({
+        configured: hasGoogleClientId(),
+        hasUsableToken: Boolean(token),
+        previouslyAuthorized: hasPreviousGoogleDriveAuthorization(),
+      });
+      if (startupAction === "setup-needed") {
         setState(createInitialState());
         return;
       }
+      if (startupAction === "disconnected") {
+        setState((current) => ({ ...current, status: "disconnected", token: null, accountId: null, scan: null, manifestPreview: null, error: null }));
+        return;
+      }
 
-      void verifyAndActivateGoogleDriveSession(token)
-        .then(async ({ accountId }) => {
-          assertGoogleDriveSession(token, accountId);
+      if (startupAction === "renew-token") {
+        setState((current) => ({ ...current, status: "renewing", token: null, error: null }));
+        try {
+          token = await requestGoogleDriveToken({ forceRefresh: true, interactive: false });
+        } catch (error) {
+          if (cancelled || currentRefreshId !== refreshId) return;
+          setState((current) => ({
+            ...current,
+            status: isGoogleDriveInteractionRequired(error) ? "reauth-required" : "error",
+            token: null,
+            error: getErrorMessage(error),
+          }));
+          return;
+        }
+      }
+
+      if (!token) return;
+
+      void runWithVerifiedGoogleDriveSession(
+        async () => undefined,
+        { interactive: false, onRenewing: () => setState((current) => ({ ...current, status: "renewing", error: null })) },
+      )
+        .then(async ({ session }) => {
+          const { token: verifiedToken, accountId } = session;
+          assertGoogleDriveSession(verifiedToken, accountId);
           const metadataRestore = await loadMetadataRestoreBundle();
-          assertGoogleDriveSession(token, accountId);
+          assertGoogleDriveSession(verifiedToken, accountId);
           if (metadataRestore) await ensureBaseForBundle(metadataRestore);
           if (cancelled || currentRefreshId !== refreshId) return;
           setState({
             status: "connected",
-            token,
+            token: verifiedToken,
             accountId,
             scan: null,
             manifestPreview: null,
@@ -154,12 +187,13 @@ export function useGoogleDriveConnection() {
         });
     };
 
-    refreshSession();
-    window.addEventListener("myvault-google-drive-session-changed", refreshSession);
+    void refreshSession();
+    const handleSessionChange = () => void refreshSession();
+    window.addEventListener("myvault-google-drive-session-changed", handleSessionChange);
 
     return () => {
       cancelled = true;
-      window.removeEventListener("myvault-google-drive-session-changed", refreshSession);
+      window.removeEventListener("myvault-google-drive-session-changed", handleSessionChange);
     };
   }, []);
 
@@ -181,7 +215,11 @@ export function useGoogleDriveConnection() {
       setState((current) => ({ ...current, status: "connected", token, accountId, error: null }));
       return token;
     } catch (error) {
-      setState((current) => ({ ...current, status: "error", error: getErrorMessage(error) }));
+      setState((current) => ({
+        ...current,
+        status: isGoogleDriveInteractionRequired(error) ? "reauth-required" : "error",
+        error: getErrorMessage(error),
+      }));
       return null;
     }
   }, []);
@@ -216,16 +254,19 @@ export function useGoogleDriveConnection() {
       });
       return token;
     } catch (error) {
-      setState((current) => ({ ...current, status: "error", error: getErrorMessage(error) }));
+      setState((current) => ({
+        ...current,
+        status: isGoogleDriveInteractionRequired(error) ? "reauth-required" : "error",
+        error: getErrorMessage(error),
+      }));
       return null;
     }
   }, []);
 
   const disconnect = useCallback(async () => {
     await disconnectGoogleDrive({ revoke: false });
-    clearActiveGoogleAccount();
     setState({
-      status: hasGoogleClientId() ? "idle" : "setup-needed",
+      status: hasGoogleClientId() ? "disconnected" : "setup-needed",
       token: null,
       accountId: null,
       scan: null,
@@ -236,19 +277,18 @@ export function useGoogleDriveConnection() {
   }, []);
 
   const scanForMyVault = useCallback(async () => {
-    const cachedToken = getCachedGoogleDriveToken();
-    const token = tokenNeedsRefresh(cachedToken) ? await connect() : cachedToken;
-
-    if (!token) {
-      return null;
-    }
-
     setState((current) => ({ ...current, status: "scanning", error: null }));
 
     try {
-      const { accountId } = await verifyAndActivateGoogleDriveSession(token);
-      const scan = await findMyVaultDriveMap(token.accessToken);
-      assertGoogleDriveSession(token, accountId);
+      const { session, value: scan } = await runWithVerifiedGoogleDriveSession(
+        async ({ token, accountId }) => {
+          const result = await findMyVaultDriveMap(token.accessToken);
+          assertGoogleDriveSession(token, accountId);
+          return result;
+        },
+        { interactive: true, onRenewing: () => setState((current) => ({ ...current, status: "renewing", error: null })) },
+      );
+      const { token, accountId } = session;
       setState((current) => ({
         ...current,
         token,
@@ -261,25 +301,24 @@ export function useGoogleDriveConnection() {
       }));
       return scan;
     } catch (error) {
-      setState((current) => ({ ...current, status: "error", error: getErrorMessage(error) }));
+      setState((current) => ({ ...current, status: isGoogleDriveInteractionRequired(error) ? "reauth-required" : "error", error: getErrorMessage(error) }));
       return null;
     }
-  }, [connect]);
+  }, []);
 
   const prepareRestorePreview = useCallback(async () => {
-    const cachedToken = getCachedGoogleDriveToken();
-    const token = tokenNeedsRefresh(cachedToken) ? await connect() : cachedToken;
-
-    if (!token) {
-      return null;
-    }
-
     setState((current) => ({ ...current, status: "scanning", error: null, manifestPreview: null }));
 
     try {
-      const { accountId } = await verifyAndActivateGoogleDriveSession(token);
-      const previewResult = await readDriveManifestPreview(token.accessToken);
-      assertGoogleDriveSession(token, accountId);
+      const { session, value: previewResult } = await runWithVerifiedGoogleDriveSession(
+        async ({ token, accountId }) => {
+          const result = await readDriveManifestPreview(token.accessToken);
+          assertGoogleDriveSession(token, accountId);
+          return result;
+        },
+        { interactive: true, onRenewing: () => setState((current) => ({ ...current, status: "renewing", error: null })) },
+      );
+      const { token, accountId } = session;
       if (!previewResult.manifestPreview) {
         setState((current) => ({
           ...current,
@@ -307,26 +346,35 @@ export function useGoogleDriveConnection() {
 
       return manifestPreview;
     } catch (error) {
-      setState((current) => ({ ...current, status: "error", error: getErrorMessage(error), manifestPreview: null }));
+      setState((current) => ({ ...current, status: isGoogleDriveInteractionRequired(error) ? "reauth-required" : "error", error: getErrorMessage(error), manifestPreview: null }));
       return null;
     }
-  }, [connect]);
+  }, []);
 
   const restoreMetadata = useCallback(async () => {
-    const cachedToken = getCachedGoogleDriveToken();
-    const token = tokenNeedsRefresh(cachedToken) ? await connect() : cachedToken;
-
-    if (!token) {
-      return null;
-    }
-
     try {
-      const { accountId } = await verifyAndActivateGoogleDriveSession(token);
-      setState((current) => ({ ...current, status: "scanning", token, accountId, error: null }));
-
-      // A restore never reuses a preview held by a previous hook or account.
-      const previewResult = await readDriveManifestPreview(token.accessToken);
-      assertGoogleDriveSession(token, accountId);
+      setState((current) => ({ ...current, status: "scanning", error: null }));
+      const { session, value: staged } = await runWithVerifiedGoogleDriveSession(
+        async ({ token, accountId }) => {
+          // Restore discovery is always fresh and bound to this verified session.
+          const previewResult = await readDriveManifestPreview(token.accessToken);
+          assertGoogleDriveSession(token, accountId);
+          if (!previewResult.manifestPreview) return { previewResult, metadataRestore: null };
+          if (previewResult.manifestPreview.issues.length) {
+            throw new Error(previewResult.manifestPreview.issues[0]);
+          }
+          await verifyDriveManifestFiles(token.accessToken, previewResult.manifestPreview.manifest, previewResult.scan);
+          const metadataRestore = await stageVerifiedMetadataRestore({
+            accessToken: token.accessToken,
+            manifest: previewResult.manifestPreview.manifest,
+          });
+          assertGoogleDriveSession(token, accountId);
+          return { previewResult, metadataRestore };
+        },
+        { interactive: true, onRenewing: () => setState((current) => ({ ...current, status: "renewing", error: null })) },
+      );
+      const { token, accountId } = session;
+      const { previewResult, metadataRestore } = staged;
       const scan = previewResult.scan;
       const manifestPreview = previewResult.manifestPreview;
 
@@ -345,20 +393,7 @@ export function useGoogleDriveConnection() {
       }
 
       setState((current) => ({ ...current, status: "restoring-metadata", scan, manifestPreview, error: null }));
-
-      const metadataEntries = getMetadataManifestEntries(manifestPreview.manifest);
-      const downloadedFiles = await Promise.all(
-        metadataEntries.map(async (entry) => ({
-          entry,
-          json: await downloadDriveFileJson<unknown>(token.accessToken, entry.cloudFileId),
-        })),
-      );
-      const metadataRestore = buildMetadataRestoreBundle(manifestPreview.manifest, downloadedFiles);
-      assertGoogleDriveSession(token, accountId);
-
-      if (metadataRestore.issues.length) {
-        throw new Error(metadataRestore.issues[0]);
-      }
+      if (!metadataRestore) throw new Error("The Drive backup could not be staged.");
 
       if (await hasPendingLocalChanges()) {
         await createLocalRecoverySnapshot("restore-blocked-dirty-workspace");
@@ -367,14 +402,14 @@ export function useGoogleDriveConnection() {
 
       await createLocalRecoverySnapshot("before-drive-restore");
       assertGoogleDriveSession(token, accountId);
-      await saveMetadataRestoreBundle(metadataRestore);
-      assertGoogleDriveSession(token, accountId);
-      await saveLocalSyncBase({
+      const base = {
         schemaVersion: 1,
         accountId,
         revision: await computeBundleRevision(metadataRestore),
         bundle: structuredClone(metadataRestore),
-      });
+      } as const;
+      assertGoogleDriveSession(token, accountId);
+      await applyMetadataRestoreAtomically(metadataRestore, base);
 
       setState((current) => ({
         ...current,
@@ -389,10 +424,10 @@ export function useGoogleDriveConnection() {
 
       return metadataRestore;
     } catch (error) {
-      setState((current) => ({ ...current, status: "error", error: getErrorMessage(error) }));
+      setState((current) => ({ ...current, status: isGoogleDriveInteractionRequired(error) ? "reauth-required" : "error", error: getErrorMessage(error) }));
       return null;
     }
-  }, [connect]);
+  }, []);
 
   return useMemo(
     () => ({
@@ -400,7 +435,7 @@ export function useGoogleDriveConnection() {
       clientId: GOOGLE_CLIENT_ID,
       driveScope: GOOGLE_DRIVE_SCOPE,
       isConfigured: hasGoogleClientId(),
-      isBusy: state.status === "connecting" || state.status === "scanning" || state.status === "reading-manifest" || state.status === "restoring-metadata",
+      isBusy: state.status === "initializing" || state.status === "connecting" || state.status === "renewing" || state.status === "scanning" || state.status === "reading-manifest" || state.status === "restoring-metadata",
       connect,
       chooseAnotherAccount,
       disconnect,

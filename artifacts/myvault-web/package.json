@@ -10,6 +10,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "verify:workspace": "tsx scripts/verify-islamic-corpus-projection.ts",
     "verify:sync": "tsx scripts/verify-safe-sync-contract.ts",
+    "verify:drive-auth": "tsx scripts/verify-drive-auth-restore.ts",
     "verify:sync-browser": "tsx scripts/verify-browser-sync.mjs"
   },
   "devDependencies": {

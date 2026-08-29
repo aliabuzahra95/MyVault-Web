@@ -2,19 +2,32 @@
 
 Audit date: 2026-08-29 (Australia/Sydney)  
 Scope: Web application only  
-Mode: audit, reproduction, and diagnosis; no application remediation
+Mode: audit baseline plus Phase 1 Drive authentication/restore remediation
 
 ## Executive result
 
 The Web application builds and its implemented local/restore-backed routes render without browser exceptions under a controlled fixture. Its browser-side sync contract has meaningful safeguards for account isolation, write locking, offline journalling, three-way merge conflicts, verified uploads, and manifest-last commits.
 
-It is not ready to describe as fully production-reliable. Three P1 issues are proven:
+The original audit proved three P1 issues:
 
 1. Google Drive connection persistence ends when the short-lived access token expires because there is no refresh token or automatic reauthorization during application initialization.
 2. The ordinary restore path parses metadata but does not verify each downloaded object's manifest size/SHA-256 or run the full candidate validator before replacing the browser workspace.
 3. The PDF reader eagerly creates every page canvas, text layer, and annotation layer. A 500-page fixture drove the Chrome process family to about 1.9 GB RSS.
 
 No cross-account data exposure was reproduced by the browser contract test, but real Google Account A/B and destructive Drive restore testing could not be performed because a controllable browser session with a visibly verified disposable account was unavailable.
+
+## Phase 1 remediation status
+
+Phase 1 resolved the first two P1 implementation gaps without changing the backup format:
+
+- startup now performs official Google Identity Services non-interactive token renewal when prior authorization exists and Google/browser policy permits it;
+- auth presentation distinguishes initialization, connection, renewal, reauthentication, and error states;
+- concurrent token renewal is single-flight, and guarded operations attempt at most one auth renewal/retry;
+- expiry and intentional disconnect no longer delete the remembered account-scoped local vault;
+- account switching no longer deletes either account's local vault and does not reuse in-memory Drive discovery state;
+- Restore now freshly discovers Drive state, verifies object presence/size and metadata SHA-256, validates JSON/schema/references, stages before apply, reasserts identity, and atomically commits the bundle plus sync base.
+
+The third P1 issue, PDF virtualization, remains intentionally untouched. Real disposable-account authentication and destructive Drive restore still require manual Google verification. See `docs/WEB_DRIVE_AUTH_REMEDIATION.md` for the exact implementation and evidence.
 
 ## A. Baseline Git and build
 
@@ -74,7 +87,7 @@ Technical controls:
 - The marker `myvault-google-drive-authorized` remembers that consent happened, but it is not a valid session.
 - Drive `about` is used to verify the token and obtain the stable Google Drive `permissionId` used as the account namespace.
 
-### Root cause of unreliable persistence
+### Root cause of unreliable persistence (original audit)
 
 The connection survives reload/tab close only while the cached access token remains valid. Tokens within 60 seconds of expiry are removed. Application initialization does not request a replacement token when no valid token exists; it resets to disconnected/idle. A token request occurs only after the user initiates Connect/Restore or a document path attempts a reconnect.
 
@@ -154,11 +167,13 @@ No P0 account leak was reproduced. This is not equivalent to a real two-Google-a
 - A local recovery snapshot is created before replacement.
 - Restored data is account-scoped.
 
-### Proven restore integrity gap
+### Proven restore integrity gap (resolved in Phase 1)
 
 The sync/write-back download path verifies size and SHA-256. The user-facing restore hook uses JSON download directly, then checks required files/internal manifest only. It does not verify each entry's manifest size/hash and does not call `validateSyncCandidate` before saving the replacement bundle.
 
 A parseable but truncated, stale, or altered metadata object can therefore pass the ordinary restore path if required files remain present. The pre-restore recovery snapshot reduces recoverability risk but does not make the restored candidate trustworthy.
+
+Phase 1 replaced that path with verified in-memory staging and an atomic IndexedDB apply. The historical paragraph above is retained as the audit finding that motivated the remediation.
 
 ### Full versus metadata-only restore
 

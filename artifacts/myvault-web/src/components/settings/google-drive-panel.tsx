@@ -25,9 +25,14 @@ import { useGoogleDriveConnection } from "@/hooks/useGoogleDriveConnection";
 import { useGoogleDriveProfile } from "@/hooks/useGoogleDriveProfile";
 import { useRestoredCorpus } from "@/hooks/useRestoredCorpus";
 import { formatBytes } from "@/lib/restore/driveManifestPreview";
-import { clearLocalWorkspaceData } from "@/lib/restore/localRestoreStore";
 import { clearRecentActivity } from "@/lib/recentActivity";
-import { getActiveAccountId } from "@/lib/sync/accountContext";
+
+function clearUnscopedAccountViewState() {
+  clearRecentActivity();
+  Object.keys(localStorage)
+    .filter((key) => key.startsWith("myvault-pdf-reader-state:"))
+    .forEach((key) => localStorage.removeItem(key));
+}
 
 function formatBackupDate(value: string | number | null | undefined) {
   if (value == null) return "Not available";
@@ -37,13 +42,6 @@ function formatBackupDate(value: string | number | null | undefined) {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(date);
-}
-
-function clearAccountSpecificPreferences() {
-  clearRecentActivity();
-  Object.keys(localStorage)
-    .filter((key) => key.startsWith("myvault-pdf-reader-state:"))
-    .forEach((key) => localStorage.removeItem(key));
 }
 
 export function GoogleDrivePanel() {
@@ -56,7 +54,7 @@ export function GoogleDrivePanel() {
   const [isSwitching, setIsSwitching] = useState(false);
   const [isDisconnecting, setIsDisconnecting] = useState(false);
 
-  const hasToken = Boolean(drive.token);
+  const hasToken = Boolean(drive.token && drive.accountId);
   const preview = drive.manifestPreview;
   const hasNoBackup = drive.status === "no-backup" || Boolean(drive.scan && !drive.scan.manifestFile);
   const hasIncompleteBackup = Boolean(drive.scan?.manifestFile && !drive.scan.ready);
@@ -70,6 +68,8 @@ export function GoogleDrivePanel() {
     || "Google Drive account";
   const verifiedAccountLabel = profile?.emailAddress?.trim() || accountName;
   const canConfirmRestore = Boolean(profile && drive.accountId);
+  const reconnectRequired = drive.status === "reauth-required";
+  const checkingConnection = drive.status === "initializing" || drive.status === "renewing";
 
   const restoredCounts = useMemo(() => {
     if (drive.metadataRestore) return drive.metadataRestore.counts;
@@ -89,11 +89,9 @@ export function GoogleDrivePanel() {
   async function switchAccount() {
     setIsSwitching(true);
     try {
-      const previousAccountId = getActiveAccountId();
       const token = await drive.chooseAnotherAccount();
       if (!token) return;
-      await clearLocalWorkspaceData(previousAccountId);
-      clearAccountSpecificPreferences();
+      clearUnscopedAccountViewState();
       setShowSwitchConfirmation(false);
     } finally {
       setIsSwitching(false);
@@ -103,10 +101,7 @@ export function GoogleDrivePanel() {
   async function disconnect() {
     setIsDisconnecting(true);
     try {
-      const previousAccountId = getActiveAccountId();
       await drive.disconnect();
-      await clearLocalWorkspaceData(previousAccountId);
-      clearAccountSpecificPreferences();
       setShowDisconnectConfirmation(false);
     } finally {
       setIsDisconnecting(false);
@@ -129,7 +124,7 @@ export function GoogleDrivePanel() {
         </div>
         <span className="inline-flex w-fit items-center gap-1.5 rounded-full bg-primary/10 px-2.5 py-1 text-[11px] font-medium text-primary">
           <span className="h-1.5 w-1.5 rounded-full bg-current" />
-          {hasToken ? "Connected" : "Not connected"}
+          {hasToken ? "Connected" : checkingConnection ? "Checking" : reconnectRequired ? "Reconnect required" : "Not connected"}
         </span>
       </div>
 
@@ -162,7 +157,7 @@ export function GoogleDrivePanel() {
           ) : (
             <Button type="button" size="sm" onClick={() => void drive.connect()} disabled={drive.isBusy || !drive.isConfigured}>
               {drive.isBusy ? <Loader2 className="animate-spin" /> : <Cloud />}
-              Connect Google Drive
+              {checkingConnection ? "Checking Google Drive" : reconnectRequired ? "Reconnect Google Drive" : "Connect Google Drive"}
             </Button>
           )}
         </div>
@@ -285,7 +280,7 @@ export function GoogleDrivePanel() {
           <AlertDialogHeader>
             <AlertDialogTitle>Use another Google account?</AlertDialogTitle>
             <AlertDialogDescription>
-              After you successfully choose the other account, MyVault will remove this account's restored corpus and any website changes from this browser. Nothing in Google Drive will be deleted.
+              MyVault will verify the other account before reading its Drive. This account's local browser vault remains stored and will be available again when you reconnect it.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -303,7 +298,7 @@ export function GoogleDrivePanel() {
           <AlertDialogHeader>
             <AlertDialogTitle>Disconnect Google Drive?</AlertDialogTitle>
             <AlertDialogDescription>
-              MyVault will sign out this Google Drive account and remove its restored corpus and website changes from this browser. Nothing in Google Drive will be deleted.
+              MyVault will stop using this Google Drive account. Its local browser vault remains on this device, and nothing in Google Drive will be deleted.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

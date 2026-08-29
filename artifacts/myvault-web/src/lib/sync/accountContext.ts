@@ -1,5 +1,4 @@
 const ACTIVE_ACCOUNT_STORAGE_KEY = "myvault-active-google-account-id";
-const DRIVE_SESSION_STORAGE_KEY = "myvault-google-drive-session";
 const ACCOUNT_CHANGE_EVENT = "myvault-active-account-changed";
 const LOCAL_ACCOUNT_ID = "local-unlinked";
 const CHANNEL_NAME = "myvault-account-coordination";
@@ -12,23 +11,8 @@ function normalizeAccountId(value: string | null | undefined) {
   return normalized ? normalized.replace(/[^a-zA-Z0-9._-]/g, "_") : LOCAL_ACCOUNT_ID;
 }
 
-function hasUsableDriveSession() {
-  if (typeof window === "undefined") return false;
-  try {
-    const raw = localStorage.getItem(DRIVE_SESSION_STORAGE_KEY);
-    if (!raw) return false;
-    const session = JSON.parse(raw) as { accessToken?: unknown; expiresAt?: unknown };
-    return typeof session.accessToken === "string"
-      && typeof session.expiresAt === "number"
-      && session.expiresAt - Date.now() > 60000;
-  } catch {
-    return false;
-  }
-}
-
 function readStoredAccountId() {
   if (typeof window === "undefined") return LOCAL_ACCOUNT_ID;
-  if (!hasUsableDriveSession()) return LOCAL_ACCOUNT_ID;
   return normalizeAccountId(localStorage.getItem(ACTIVE_ACCOUNT_STORAGE_KEY));
 }
 
@@ -57,10 +41,6 @@ function getChannel() {
 
 if (typeof window !== "undefined") {
   getChannel();
-  window.addEventListener("myvault-google-drive-session-changed", () => {
-    if (hasUsableDriveSession()) return;
-    clearActiveGoogleAccount();
-  });
   window.addEventListener("storage", (event) => {
     if (event.key !== ACTIVE_ACCOUNT_STORAGE_KEY) return;
     const nextAccountId = readStoredAccountId();
