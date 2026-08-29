@@ -61,22 +61,17 @@ Passed:
 
 ## Real Chrome acceptance
 
-Blocked by the current Google/Vercel credential state:
+Completed on 2026-08-30 against `https://myvault-web.vercel.app`:
 
-- Vercel contains only the public `VITE_GOOGLE_CLIENT_ID`; it does not contain the matching `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, or `MYVAULT_GOOGLE_SESSION_SECRET` required by the server session.
-- The only local Web OAuth credential that includes a client secret authorizes localhost only and Google now rejects it with `Error 401: deleted_client`.
-- The deployed origin `https://myvault-web.vercel.app` therefore cannot yet be added to a valid matched client used by both the browser and server.
+- Recovered the existing valid Google Web OAuth client in project `myvault-fbfd1`; its client ID matches the public `VITE_GOOGLE_CLIENT_ID` and its authorized JavaScript origins already include the production origin.
+- Created a new server credential on that existing client rather than creating a duplicate OAuth client.
+- Installed the matched client ID, client secret, and private session-sealing secret in the Vercel Production and Preview environments. No private value was printed, committed, or stored in a public `VITE_` variable.
+- Deployed production commit `c3a91e676d7c261801f4a5ab96b3d9930ad892c5` and verified the unauthenticated endpoint fails closed with `401` and `interactionRequired: true`.
+- Connected and visibly verified `aahforex@gmail.com` in normal Google Chrome.
+- Reloaded Settings and observed connected Drive state without another Google chooser.
+- Fully quit and relaunched Chrome twice; both launches restored connected Drive state without another Google chooser.
 
-The remediation must not be promoted to production until a valid Google Web OAuth client is created/recovered, its production origin is authorized, and all three server environment values are installed in Vercel. Acceptance must then prove:
-
-1. connect and visibly verify the disposable account;
-2. fully quit Chrome;
-3. reopen Chrome and MyVault;
-4. observe connected Drive state without another Google chooser;
-5. allow/force access-token renewal and repeat;
-6. perform destructive restore only against disposable MyVault data.
-
-The automated endpoint and browser contracts are complete, but they are not substituted for this real-account gate.
+The durable real-account authentication gate is passed. A destructive Drive restore was deliberately not run because the connected account may contain real MyVault data and no disposable restore fixture was proven. Destructive backup/restore remains a separate controlled acceptance test.
 
 ## Deliberately unchanged
 

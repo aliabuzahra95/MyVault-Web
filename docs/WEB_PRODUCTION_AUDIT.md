@@ -14,7 +14,7 @@ The original audit proved three P1 issues:
 2. The ordinary restore path parses metadata but does not verify each downloaded object's manifest size/SHA-256 or run the full candidate validator before replacing the browser workspace.
 3. The PDF reader eagerly creates every page canvas, text layer, and annotation layer. A 500-page fixture drove the Chrome process family to about 1.9 GB RSS.
 
-No cross-account data exposure was reproduced by the browser contract test. The implementation gaps are now remediated; real Google-account Chrome restart and destructive disposable-data restore remain release acceptance gates until the server OAuth environment is configured and exercised.
+No cross-account data exposure was reproduced by the browser contract test. The implementation gaps are now remediated. The matched server OAuth environment is configured and real Google-account Chrome restart persistence has passed; destructive disposable-data restore remains a separate release acceptance gate.
 
 ## Current remediation status
 
@@ -122,9 +122,9 @@ This exactly explains the reported intermittent behavior: reopen within the toke
 | Manual Connect/Reconnect | GIS code popup -> server exchange -> verified sealed session |
 | Deliberate Disconnect -> reload | Server session and marker remain disconnected |
 | Cross-tab authorization change | Non-secret nonce triggers session re-evaluation; access tokens are not copied between tabs |
-| Browser restart | Architecture supports cookie-backed renewal; real Google Chrome restart remains an acceptance gate |
+| Browser restart | Passed in normal Google Chrome after two complete quit-and-reopen cycles without another account chooser |
 
-The endpoint and browser contract matrix passed for startup renewal, expiry renewal, single-flight behavior, invalid grant, account mismatch, logout, and one-retry limits. The real Google transition matrix is still pending because the deployed Vercel environment does not yet have the required matched server OAuth credentials and session secret, and the disposable identity has not yet been visibly asserted in the browser.
+The endpoint and browser contract matrix passed for startup renewal, expiry renewal, single-flight behavior, invalid grant, account mismatch, logout, and one-retry limits. Vercel now has the matched server OAuth credentials and private session secret, `aahforex@gmail.com` was visibly asserted in normal Chrome, and connected state survived a reload plus two complete Chrome restarts.
 
 ## E. Google account switching and isolation
 
@@ -192,9 +192,9 @@ The UI restores metadata and fetches file blobs later when a document is opened.
 
 ## G. Disposable Google backup/restore result
 
-Not performed. No destructive Drive action was attempted because the exact active disposable identity could not be proven in the available browser automation context.
+Not performed. The exact active identity was visibly proven as `aahforex@gmail.com`, but the account may contain real MyVault data. A destructive restore was therefore not attempted without a separately proven disposable fixture and external safety copy.
 
-Required next acceptance run after manual authentication:
+Required controlled destructive acceptance run:
 
 1. visibly confirm the disposable account;
 2. record Drive `permissionId`, manifest cloud version/timestamp, entry count, and expected fixture identity;
@@ -209,7 +209,7 @@ Required next acceptance run after manual authentication:
 - Browser contract tests passed offline local journalling and failed-upload recovery.
 - Restore blocks when pending local edits exist and creates a recovery snapshot.
 - Write-back fails closed when upload readback differs or when a three-way merge conflicts.
-- A real Drive interruption, token expiry during upload, repeated backup, refresh during restore, and stale Drive discovery remain untested without the disposable Google session.
+- A real Drive interruption, token expiry during upload, repeated backup, refresh during restore, and stale Drive discovery remain untested against a proven disposable backup fixture.
 
 ## I. Android/Web compatibility
 
@@ -320,7 +320,7 @@ Count at original audit: **3**
 Implemented remediations: **3**
 Live acceptance blockers: **1**
 
-1. **Drive automatic renewal:** implemented with the sealed server refresh session; automated expiry, single-flight, invalid-grant, and account-mismatch tests pass. Real Google Chrome restart remains unproven until the Vercel server environment and Google OAuth production origin are configured with one matched credential set.
+1. **Drive automatic renewal:** implemented with the sealed server refresh session; automated expiry, single-flight, invalid-grant, and account-mismatch tests pass. The matched Vercel/Google OAuth environment is configured and normal Chrome restored the connected session after two full restarts.
 2. **Restore object integrity:** resolved by verified staged restore, full candidate validation, identity reassertion, recovery snapshot, and atomic apply.
 3. **PDF rendering:** resolved by the five-page virtual window and bounded ownership. The reported 24 MB/1,494-page reproducer passed highlight/note/zoom/reopen without crash in automated Chrome.
 
@@ -354,7 +354,7 @@ Count: **3**
 - Implemented initialization/connected/renewing/reauthentication/error state separation.
 - Implemented verified `permissionId` binding and fail-closed account mismatch handling.
 - Automated endpoint/browser contracts pass.
-- Pending: matched Vercel OAuth secrets, Google production origin authorization, and repeated real Chrome restart/two-account acceptance.
+- Completed for the verified `aahforex@gmail.com` account: matched Vercel OAuth secrets, authorized production origin, production deployment, reload, and two complete Chrome restart cycles. Real two-account acceptance remains pending.
 
 ### Phase 2 - restore and backup reliability
 
@@ -385,10 +385,10 @@ Count: **3**
 - offline, quota, token expiry, interrupted upload/restore, stale manifest, duplicate/no-change backup.
 - full feature walk, accessibility, browser matrix, large-PDF memory acceptance thresholds.
 
-## Manual blocker
+## Remaining controlled acceptance
 
-**PRODUCTION OAUTH ENVIRONMENT AND TEST ACCOUNT VERIFICATION ARE REQUIRED**
+**DESTRUCTIVE RESTORE REQUIRES A PROVEN DISPOSABLE FIXTURE**
 
-The live Vercel project currently exposes only `VITE_GOOGLE_CLIENT_ID`; it does not yet contain `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, or `MYVAULT_GOOGLE_SESSION_SECRET`. The locally available Web OAuth client is a different client ID and currently authorizes only localhost origins. A matched credential set and the production origin `https://myvault-web.vercel.app` must be configured before deployment and real Chrome restart acceptance.
+The live Vercel project now has the matched server OAuth configuration, the production origin is authorized, and `aahforex@gmail.com` remained connected through a reload and two complete Chrome restart cycles. Private server credentials remain outside Git and browser-readable configuration.
 
-Until the disposable account is visibly authenticated in a controllable browser session, destructive restore, repeated real Drive backup/restore, browser-restart identity persistence, and real Google Account A/B acceptance remain unclaimed.
+Destructive restore, repeated real Drive backup/restore, and real Google Account A/B acceptance remain unclaimed. They must use isolated fixture data and an external safety copy; the existing account must not be assumed disposable merely because its identity is known.
