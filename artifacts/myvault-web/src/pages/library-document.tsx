@@ -14,13 +14,15 @@ import {
   isGoogleDriveAuthorizationError,
 } from "@/lib/googleDrive/driveClient";
 import {
-  clearCachedGoogleDriveToken,
   getCachedGoogleDriveToken,
   hasPreviousGoogleDriveAuthorization,
-  requestGoogleDriveToken,
   type GoogleDriveToken,
 } from "@/lib/googleDrive/identity";
-import { assertGoogleDriveSession, verifyAndActivateGoogleDriveSession } from "@/lib/googleDrive/accountSession";
+import {
+  assertGoogleDriveSession,
+  runWithVerifiedGoogleDriveSession,
+  verifyAndActivateGoogleDriveSession,
+} from "@/lib/googleDrive/accountSession";
 import { cacheAttachmentManifestEntries, getAttachmentFileClaim } from "@/lib/restore/attachmentFileRestore";
 import { parseDriveSyncManifest } from "@/lib/restore/driveManifestPreview";
 import { recordRecentActivity } from "@/lib/recentActivity";
@@ -266,11 +268,9 @@ export default function LibraryDocumentPage() {
       setStatus("ready");
     } catch (cause) {
       if (activeAttachmentId.current !== requestedAttachmentId) return;
-      if (isGoogleDriveAuthorizationError(cause)) clearCachedGoogleDriveToken();
+      if (isGoogleDriveAuthorizationError(cause)) throw cause;
       setStatus("error");
-      setError(isGoogleDriveAuthorizationError(cause)
-        ? "Your Google Drive session expired. Reconnect once to continue."
-        : cause instanceof Error ? cause.message : "The document could not be restored from Google Drive.");
+      setError(cause instanceof Error ? cause.message : "The document could not be restored from Google Drive.");
     }
   }, [attachment, id]);
 
@@ -279,9 +279,13 @@ export default function LibraryDocumentPage() {
     setStatus("connecting");
     setError(null);
     try {
-      const token = await requestGoogleDriveToken({ interactive });
-      if (activeAttachmentId.current !== requestedAttachmentId) return;
-      await openDriveFile(token);
+      await runWithVerifiedGoogleDriveSession(
+        async ({ token }) => {
+          if (activeAttachmentId.current !== requestedAttachmentId) return;
+          await openDriveFile(token);
+        },
+        { interactive },
+      );
     } catch (cause) {
       if (activeAttachmentId.current !== requestedAttachmentId) return;
       setStatus("error");
@@ -325,7 +329,7 @@ export default function LibraryDocumentPage() {
 
         const token = getCachedGoogleDriveToken();
         if (token) {
-          void openDriveFile(token);
+          void connectAndOpen(false);
         } else if (hasPreviousGoogleDriveAuthorization()) {
           void connectAndOpen(false);
         }
