@@ -9,7 +9,7 @@ const fixturePaths = process.argv.slice(2).filter((value) => value !== "--");
 assert.ok(fixturePaths.length > 0, "Pass at least one PDF fixture path.");
 
 const browser = await chromium.launch({
-  headless: true,
+  headless: process.env.MYVAULT_HEADLESS !== "false",
   executablePath: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
   args: ["--js-flags=--expose-gc"],
 });

@@ -57,11 +57,11 @@ All tests used the production Library document route, local attachment persisten
 |---|---:|---:|---:|---:|---:|---:|---|
 | macOS Volume fixture | 16,284 B | 1 | 2 during replacement | 1 | 388 | 15.7 MB | PASS |
 | Arabic medium fixture | 12,362,535 B | 247 | 5 | 5 | 1,402 | 18.0 MB | PASS |
-| Reported crash fixture | 24,118,227 B | 1,494 | 5 | 5 | 6,374 | 24.1 MB | PASS |
+| Reported crash fixture | 24,118,227 B | 1,494 | 5 | 5 | 6,382 | 24.4 MB | PASS, headed Chrome |
 | Largest suitable local fixture | 40,482,212 B | 135 | 5 | 5 | 954 | 17.3 MB | PASS |
 | High-page text-layer fixture | 16,704,585 B | 494 | 5 | 5, 24 spans sampled | 2,405 | 20.4 MB | PASS |
 
-The 1,494-page fixture fell from 6,374 measured DOM nodes/24.1 MB JavaScript heap while open to 334 nodes/15.6 MB after close. It had zero PDF canvases and text layers after leaving the reader. The 494-page text fixture also had zero attached PDF canvases/text layers after close; its JavaScript heap fell from 20.4 MB to 16.8 MB.
+The final headed-Google-Chrome run of the 1,494-page fixture fell from 6,382 measured DOM nodes/24.4 MB JavaScript heap while open to 334 nodes/16.2 MB after close. It had zero PDF canvases and text layers after leaving the reader. The 494-page text fixture also had zero attached PDF canvases/text layers after close; its JavaScript heap fell from 20.4 MB to 16.8 MB.
 
 No tested fixture froze, crashed, reloaded, or emitted an unhandled page error after remediation. Highlights and the page note persisted after closing and reopening each fixture.
 

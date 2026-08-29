@@ -2,7 +2,7 @@
 
 Audit date: 2026-08-29 (Australia/Sydney)  
 Scope: Web application only  
-Mode: audit baseline plus Phase 1 Drive authentication/restore remediation
+Mode: audit baseline plus mandatory Drive persistence and PDF performance remediation
 
 ## Executive result
 
@@ -14,20 +14,22 @@ The original audit proved three P1 issues:
 2. The ordinary restore path parses metadata but does not verify each downloaded object's manifest size/SHA-256 or run the full candidate validator before replacing the browser workspace.
 3. The PDF reader eagerly creates every page canvas, text layer, and annotation layer. A 500-page fixture drove the Chrome process family to about 1.9 GB RSS.
 
-No cross-account data exposure was reproduced by the browser contract test, but real Google Account A/B and destructive Drive restore testing could not be performed because a controllable browser session with a visibly verified disposable account was unavailable.
+No cross-account data exposure was reproduced by the browser contract test. The implementation gaps are now remediated; real Google-account Chrome restart and destructive disposable-data restore remain release acceptance gates until the server OAuth environment is configured and exercised.
 
-## Phase 1 remediation status
+## Current remediation status
 
-Phase 1 resolved the first two P1 implementation gaps without changing the backup format:
+The Drive restore-integrity gap remains resolved without changing the backup format. The mandatory persistence phase additionally replaces browser token storage with a server authorization-code exchange and an encrypted HTTP-only refresh session:
 
-- startup now performs official Google Identity Services non-interactive token renewal when prior authorization exists and Google/browser policy permits it;
+- startup now restores/renews through `/api/google-drive-auth` before choosing the final Drive state;
+- access tokens remain in memory and refresh credentials remain inaccessible to browser JavaScript;
+- renewal re-verifies the stable Drive permission ID and fails closed on account mismatch or revoked grant;
 - auth presentation distinguishes initialization, connection, renewal, reauthentication, and error states;
 - concurrent token renewal is single-flight, and guarded operations attempt at most one auth renewal/retry;
 - expiry and intentional disconnect no longer delete the remembered account-scoped local vault;
 - account switching no longer deletes either account's local vault and does not reuse in-memory Drive discovery state;
 - Restore now freshly discovers Drive state, verifies object presence/size and metadata SHA-256, validates JSON/schema/references, stages before apply, reasserts identity, and atomically commits the bundle plus sync base.
 
-The third P1 issue, PDF virtualization, remains intentionally untouched. Real disposable-account authentication and destructive Drive restore still require manual Google verification. See `docs/WEB_DRIVE_AUTH_REMEDIATION.md` for the exact implementation and evidence.
+The PDF issue is also remediated. The viewer now keeps one stable document, renders a five-page window, retains lightweight placeholders, caps remembered page dimensions at 24, removes the unbounded Blob map, and contains reader errors. The reported 24,118,227-byte/1,494-page file completed two highlights, a page note, zoom, close, and reopen with five peak PDF canvases and no crash. See `docs/WEB_DRIVE_AUTH_REMEDIATION.md` and `docs/WEB_PDF_PERFORMANCE_REMEDIATION.md`.
 
 ## A. Baseline Git and build
 
@@ -35,10 +37,10 @@ The third P1 issue, PDF virtualization, remains intentionally untouched. Real di
 |---|---|
 | Repository | `/Users/aliah/Desktop/Current Projects/MyVault-Web` |
 | Branch | `main` |
-| Baseline commit | `8c4a60755164eb07b9ae0ea50cdae35fbcedb521` |
+| Baseline commit for mandatory remediation | `56c4754cf4ef74779685b09cabb2037d0652f887` |
 | Remote | `https://github.com/aliabuzahra95/MyVault-Web.git` |
 | Local/remote state | Local `main` matched `origin/main` at baseline |
-| Recovery tag | `pre-web-production-audit-20260829` |
+| Recovery tag | `pre-drive-pdf-remediation-20260829` |
 | Tag push | Passed |
 | Tracked tree before audit | Clean |
 | Dependency install | `pnpm install --frozen-lockfile` passed |
@@ -76,16 +78,24 @@ Technical controls:
 
 ## C. Google Drive authentication architecture
 
-### Implementation
+### Original implementation
 
 - Google Identity Services OAuth token client (`initTokenClient`).
 - Scope: `https://www.googleapis.com/auth/drive.file`.
-- Browser implicit access-token flow; no server authorization-code exchange.
-- No backend user session, session cookie, refresh token, or refresh-token rotation.
-- Access token, expiry, and scope are stored in plaintext localStorage under `myvault-google-drive-session`.
-- A legacy sessionStorage token is migrated to localStorage.
-- The marker `myvault-google-drive-authorized` remembers that consent happened, but it is not a valid session.
-- Drive `about` is used to verify the token and obtain the stable Google Drive `permissionId` used as the account namespace.
+- Browser implicit access-token flow with no server authorization-code exchange.
+- Access token, expiry, and scope stored in plaintext localStorage under `myvault-google-drive-session`.
+- No backend user session or durable refresh mechanism.
+
+### Remediated implementation
+
+- Google Identity Services authorization-code client (`initCodeClient`) requests a one-time code in a popup.
+- `/api/google-drive-auth` exchanges that code with Google and keeps the refresh credential server-side.
+- The server seals the refresh credential and expected Drive `permissionId` with AES-256-GCM in an `HttpOnly`, `SameSite=Lax` cookie (`Secure` on HTTPS).
+- Browser JavaScript receives only a short-lived access token, expiry, scope, and verified Drive account ID. Access tokens remain in module memory and are never persisted.
+- Startup calls the session endpoint before rendering the final Drive state. A valid cookie is refreshed and reverified without account selection.
+- Renewal verifies the refreshed credential against the stored Drive `permissionId`; revoked grants, invalid credentials, and account mismatch clear the session and fail closed.
+- Legacy localStorage/sessionStorage token records are removed during initialization.
+- The marker `myvault-google-drive-authorized` remains a non-secret presentation hint only and is not treated as proof of connection.
 
 ### Root cause of unreliable persistence (original audit)
 
@@ -93,27 +103,28 @@ The connection survives reload/tab close only while the cached access token rema
 
 This exactly explains the reported intermittent behavior: reopen within the token lifetime appears connected; reopen after expiry appears disconnected and asks the user to authenticate again.
 
-### Initialization/state concerns
+### Initialization/state result
 
-- Initial state labels the connection `connected` from token presence before the Drive account has been reverified. The effect later performs verification, but the initial badge can briefly overstate certainty.
-- The access token in localStorage is readable by any script executing in the origin. This increases the impact of an XSS defect and should be considered when choosing the remediation architecture.
-- Disconnect clears the local token/authorization marker without revoking the Google grant. This is deliberate in current code, but the UI should describe it accurately.
+- Drive begins in `initializing`, not `connected` or `disconnected`.
+- The final connected state is published only after server renewal and Drive identity verification succeed.
+- `connected`, `renewing`, `reauth-required`, `disconnected`, and `error` remain distinct states.
+- Disconnect clears the sealed server session and the non-secret browser marker. It does not claim to revoke the Google grant.
 
 ## D. Drive persistence reproduction
 
 | Transition | Result |
 |---|---|
-| Valid cached token -> reload | Source path rehydrates token and verifies Drive identity |
-| Valid cached token -> tab reopen | Supported by localStorage while token remains unexpired |
-| Expired/near-expiry token -> reload | Proven disconnected fallback; token is cleared |
-| Automatic silent refresh at startup | Not implemented |
-| Manual Connect/Reconnect | Requests a new access token through Google Identity Services |
-| Deliberate Disconnect -> reload | Local session remains disconnected |
-| Cross-tab token change | Storage event refreshes session state |
-| Browser restart with unexpired token | Architecture supports it; real Google browser restart not exercised |
-| Browser restart after expiry | Returns disconnected; no automatic token renewal |
+| Startup with valid sealed session | Server refreshes, verifies expected Drive identity, then returns connected state |
+| Reload/tab reopen | Restores through the server cookie; browser token persistence is not used |
+| Expired access token | Single-flight server renewal obtains a new token and guarded operation retries once |
+| Revoked/invalid refresh grant | Session is cleared and UI moves to reauthentication-required |
+| Account mismatch on renewal | Session is cleared and request fails closed |
+| Manual Connect/Reconnect | GIS code popup -> server exchange -> verified sealed session |
+| Deliberate Disconnect -> reload | Server session and marker remain disconnected |
+| Cross-tab authorization change | Non-secret nonce triggers session re-evaluation; access tokens are not copied between tabs |
+| Browser restart | Architecture supports cookie-backed renewal; real Google Chrome restart remains an acceptance gate |
 
-The real Google transition matrix was not run because the authorized disposable account could not be visibly asserted in an automatable browser context.
+The endpoint and browser contract matrix passed for startup renewal, expiry renewal, single-flight behavior, invalid grant, account mismatch, logout, and one-retry limits. The real Google transition matrix is still pending because the deployed Vercel environment does not yet have the required matched server OAuth credentials and session secret, and the disposable identity has not yet been visibly asserted in the browser.
 
 ## E. Google account switching and isolation
 
@@ -232,50 +243,40 @@ This is compatibility drift requiring explicit remediation tests before Android 
 
 ### File lifecycle
 
-- The full response is materialized as a Blob before rendering.
-- The Blob may exist in IndexedDB, a module-level in-memory `Map`, and an active object URL simultaneously.
-- Object URLs are revoked when replaced/unmounted.
-- The module-level PDF session cache has no size bound, LRU eviction, or explicit release on close.
-- A stable React-PDF `Document` is used per open viewer.
+- IndexedDB remains the durable owner of locally restored/imported PDF bytes.
+- One object URL is active for the opened document and is revoked on replacement or close.
+- The previous unbounded module-level Blob map has been removed.
+- One stable React-PDF `Document` is keyed only by the opened file URL. Annotation, mode, and colour changes do not recreate it.
 
 ### Rendering lifecycle
 
-- `numPages` is converted to an array containing every page number.
-- Every page mounts a React-PDF `Page` immediately.
-- Every page enables canvas, text layer, and annotation layer immediately.
-- There is no virtual list, IntersectionObserver, visible-page window, render cancellation, or bounded canvas/page cache.
-- Every scroll frame scans every mounted page element to find the nearest page, adding O(page count) layout reads.
-- Zoom changes the width of every mounted page and can trigger broad rerendering.
-
-This is the proven primary large-document bottleneck.
+- Only the current page plus two pages before and after it mount React-PDF `Page` components: five active pages maximum.
+- Distant pages retain lightweight fixed-ratio placeholders so document height, page jump, and reading position remain stable.
+- Canvas, text, and annotation layers exist only inside the active window. React-PDF cancels/reclaims page render work when a page leaves that window.
+- IntersectionObserver owns current-page tracking; scrolling no longer scans every page rectangle on each frame.
+- Page dimensions are cached with an explicit maximum of 24 entries.
+- Page rendering and annotation overlays are memoized; saving an annotation updates the affected page overlay without replacing its PDF canvas.
+- Viewer failures are contained by a PDF-specific error boundary rather than escaping into the application shell.
 
 ## K. Controlled large-PDF reproduction
 
-Disposable synthetic files were generated outside the repository. Chrome ran headless at 1440 x 1000. RSS is the aggregate Chrome process family for the isolated profile, so it includes browser overhead and should be used comparatively rather than as a JavaScript-heap measurement.
+The pre-fix measurements above proved linear growth and motivated the remediation. The post-fix harness uses the real Web route, IndexedDB attachment path, Chrome DevTools metrics, deep page jumps, two highlights, a page note, zoom, close, and reopen.
 
-| Fixture | Size | Pages/type | First canvas | Rendered DOM | Peak/loaded RSS | RSS after close |
-|---|---:|---|---:|---:|---:|---:|
-| small text | 13 KB | 10 text pages | 0.99 s | 10 pages, 11 canvases, 560 text spans, 1,390 elements | ~1,005 MB | ~966 MB |
-| medium text | 121 KB | 100 text pages | 1.92 s | 100 pages, 101 canvases, 5,600 text spans, 12,010 elements | ~1,234 MB | ~1,030 MB |
-| image-heavy | 35.97 MB | 18 image pages | 0.99 s | 18 canvases, no text spans | ~1,300 MB | ~1,089 MB |
-| large text | 595 KB | 500 text pages | 3.14 s | 500 pages, 501 canvases, 28,000 text spans, 59,210 elements | ~1,911 MB | ~1,107 MB |
+| Fixture | Size | Pages/type | Peak active PDF canvases | Peak DOM | Peak JS heap | After close |
+|---|---:|---|---:|---:|---:|---|
+| macOS Volume sample | 16,284 B | 1 page | 1 active page layer | 388 | 15.7 MB | PDF layers detached |
+| Arabic medium | 12,362,535 B | 247 pages | 5 | 1,402 | 17.97 MB | PDF layers detached |
+| WHERE IS ALLAH | 40,482,212 B | 135 pages | 5 | 954 | 17.29 MB | PDF layers detached |
+| Kitab Al Iman | 16,704,585 B | 494 text pages | 5 | 2,405; 24 sampled text spans | 20.40 MB | 16.85 MB; zero attached PDF canvases/text layers |
+| Reported reproducer | 24,118,227 B | 1,494 scanned pages | 5 | 6,374 | 24.05 MB | 334 DOM; 15.63 MB heap; zero attached PDF layers |
 
-No tab crash occurred in these bounded runs and no console/page error was emitted. That does not clear the user-reported crash. The measured growth proves the reader scales with total page count and content raster cost rather than the visible viewport. A 36 MB image-heavy file and a 500-page text file both push memory sharply upward.
-
-A same-context switching harness did not complete because the first synthetic attachment failed to reach a visible canvas within its 60-second bound. The earlier isolated open/close runs remain valid; repeated PDF switching and cache accumulation remain unverified and should be a remediation acceptance test.
+The 24,118,227-byte reproducer saved highlights on pages 1001 and 1150, saved a page note, zoomed, returned, closed, reopened, and restored its annotations with five active canvases. No freeze, page crash, reload, unhandled rejection, or application-route ejection occurred. The reopened viewer again bounded itself to five canvases.
 
 ## L. Recommended PDF architecture
 
-1. Keep one PDF.js document/worker per open file.
-2. Virtualize pages and mount only visible pages plus a small overscan window.
-3. Lazy-render text and annotation layers with the page window.
-4. Cancel obsolete render tasks when pages leave the window or zoom changes.
-5. Bound cached page/canvas resources and evict least-recently-used entries.
-6. Replace the unbounded Blob map with a bounded cache; rely on IndexedDB for durable local blobs.
-7. Cap effective render scale/device pixel ratio where necessary.
-8. Use an observer/current-page index instead of scanning all page rectangles on every scroll frame.
-9. Explicitly destroy document resources and clear transient caches on close/switch.
-10. Retest small, scanned 20 MB+, 500-page, rapid scroll/jump/zoom, close/switch/reopen, and annotations.
+Implemented: stable document ownership, five-page virtualization window, lazy text/annotation layers, render cancellation through page unmount, capped dimension cache, IndexedDB-backed Blob ownership, observer-based current-page tracking, explicit object-URL cleanup, page-local annotation updates, and PDF error containment.
+
+The same complete interaction sequence also passed in a visible headed Google Chrome run. The final headed metrics were five canvases, 6,382 peak DOM nodes, 24.4 MB peak JavaScript heap, 334 DOM nodes and 16.2 MB heap after close, and no crash or unhandled error.
 
 ## M. Console, network, and runtime observations
 
@@ -283,8 +284,8 @@ A same-context switching harness did not complete because the first synthetic at
 - Routes exercised: Dashboard, Study, restored Note, Library, Courses, Course detail, Qur'an, Search, Settings.
 - Search returned the expected restored Note for `Tawakkul`.
 - Existing browser sync verification passed account isolation, locking, offline journalling, manifest-last commit, and failed-upload recovery.
-- No real Google network trace was collected because no verified disposable account session was available.
-- The production API server implements only `/api/healthz`. The Web frontend installs `mockFetcher()` and handles application API behavior in the browser/IndexedDB. The OpenAPI CRUD contract is not implemented by the Express server.
+- No real Google network trace has yet been collected because no verified disposable account session is available in the acceptance browser.
+- Vercel now exposes `/api/google-drive-auth` as the narrow server-side OAuth/session boundary. General application CRUD still uses the browser/IndexedDB `mockFetcher()` architecture; the Express API remains health-only.
 
 ## N. Feature walk results
 
@@ -315,11 +316,13 @@ No cross-account leak or committed backup corruption was reproduced. Real two-ac
 
 ### P1 - crashes/auth/backup reliability
 
-Count: **3**
+Count at original audit: **3**
+Implemented remediations: **3**
+Live acceptance blockers: **1**
 
-1. **Drive connection expires without automatic renewal.** Short-lived token persistence is mistaken for session persistence; no refresh token/backend session/silent initialization recovery exists.
-2. **Ordinary restore omits object integrity and full candidate validation.** It does not enforce entry size/SHA-256 or `validateSyncCandidate` before replacing local metadata.
-3. **PDF rendering is unbounded.** Every page/canvas/text layer mounts eagerly and the Blob session cache is unbounded; measured RSS reached about 1.9 GB for 500 pages.
+1. **Drive automatic renewal:** implemented with the sealed server refresh session; automated expiry, single-flight, invalid-grant, and account-mismatch tests pass. Real Google Chrome restart remains unproven until the Vercel server environment and Google OAuth production origin are configured with one matched credential set.
+2. **Restore object integrity:** resolved by verified staged restore, full candidate validation, identity reassertion, recovery snapshot, and atomic apply.
+3. **PDF rendering:** resolved by the five-page virtual window and bounded ownership. The reported 24 MB/1,494-page reproducer passed highlight/note/zoom/reopen without crash in automated Chrome.
 
 ### P2 - major broken/incomplete behavior
 
@@ -347,11 +350,11 @@ Count: **3**
 
 ### Phase 1 - Google session and account truth
 
-- Choose a supported persistent OAuth architecture: preferably authorization code + PKCE with a secure backend session/refresh handling, or a carefully tested GIS silent-reauthorization strategy.
-- Do not store refresh tokens in browser JavaScript/localStorage.
-- Model `connecting`, `verifying`, `connected`, `expired`, and `disconnected` separately.
-- Require verified `permissionId` before displaying account-connected/backup actions.
-- Run reload, reopen, browser restart, expiry, disconnect/reconnect, and two-account tests.
+- Implemented authorization-code exchange and encrypted HTTP-only refresh session.
+- Implemented initialization/connected/renewing/reauthentication/error state separation.
+- Implemented verified `permissionId` binding and fail-closed account mismatch handling.
+- Automated endpoint/browser contracts pass.
+- Pending: matched Vercel OAuth secrets, Google production origin authorization, and repeated real Chrome restart/two-account acceptance.
 
 ### Phase 2 - restore and backup reliability
 
@@ -364,8 +367,9 @@ Count: **3**
 
 ### Phase 3 - PDF scalability
 
-- Virtualize pages, lazy layers, cancel stale renders, bound caches, and dispose resources.
-- Profile scanned/image-heavy, high-page-count, repeated switching, jump, zoom, annotations, and close/reopen.
+- Implemented virtualization, lazy layers, stale-render cleanup, bounded caches, page-local annotation updates, and close disposal.
+- Small, medium, image-heavy, high-page-count text, 40 MB, and the reported 24 MB/1,494-page fixture pass the automated Chrome stress matrix.
+- Completed: the reported 24 MB/1,494-page fixture passed the complete interaction sequence in visible headed Google Chrome.
 
 ### Phase 4 - functional gaps
 
@@ -383,6 +387,8 @@ Count: **3**
 
 ## Manual blocker
 
-**TEST ACCOUNT AUTHENTICATION REQUIRES MANUAL GOOGLE VERIFICATION**
+**PRODUCTION OAUTH ENVIRONMENT AND TEST ACCOUNT VERIFICATION ARE REQUIRED**
 
-Until the disposable account is visibly authenticated in a controllable browser session, destructive restore, repeated real Drive backup/restore, browser-restart identity persistence, and real Google Account A/B acceptance must remain unclaimed.
+The live Vercel project currently exposes only `VITE_GOOGLE_CLIENT_ID`; it does not yet contain `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, or `MYVAULT_GOOGLE_SESSION_SECRET`. The locally available Web OAuth client is a different client ID and currently authorizes only localhost origins. A matched credential set and the production origin `https://myvault-web.vercel.app` must be configured before deployment and real Chrome restart acceptance.
+
+Until the disposable account is visibly authenticated in a controllable browser session, destructive restore, repeated real Drive backup/restore, browser-restart identity persistence, and real Google Account A/B acceptance remain unclaimed.

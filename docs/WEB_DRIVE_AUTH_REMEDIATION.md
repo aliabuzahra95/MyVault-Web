@@ -61,7 +61,13 @@ Passed:
 
 ## Real Chrome acceptance
 
-Pending deployment environment configuration and the required disposable-account test. Acceptance must prove:
+Blocked by the current Google/Vercel credential state:
+
+- Vercel contains only the public `VITE_GOOGLE_CLIENT_ID`; it does not contain the matching `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, or `MYVAULT_GOOGLE_SESSION_SECRET` required by the server session.
+- The only local Web OAuth credential that includes a client secret authorizes localhost only and Google now rejects it with `Error 401: deleted_client`.
+- The deployed origin `https://myvault-web.vercel.app` therefore cannot yet be added to a valid matched client used by both the browser and server.
+
+The remediation must not be promoted to production until a valid Google Web OAuth client is created/recovered, its production origin is authorized, and all three server environment values are installed in Vercel. Acceptance must then prove:
 
 1. connect and visibly verify the disposable account;
 2. fully quit Chrome;
@@ -69,6 +75,8 @@ Pending deployment environment configuration and the required disposable-account
 4. observe connected Drive state without another Google chooser;
 5. allow/force access-token renewal and repeat;
 6. perform destructive restore only against disposable MyVault data.
+
+The automated endpoint and browser contracts are complete, but they are not substituted for this real-account gate.
 
 ## Deliberately unchanged
 
