@@ -306,6 +306,16 @@ await assert.rejects(
 const projectRoot = fileURLToPath(new URL("..", import.meta.url));
 const panelSource = await readFile(`${projectRoot}/src/components/settings/google-drive-panel.tsx`, "utf8");
 assert.equal(panelSource.includes("clearLocalWorkspaceData"), false, "Drive disconnect/account switch must not delete the local vault.");
+assert.equal(
+  panelSource.includes("const canConfirmRestore = Boolean(drive.accountId);"),
+  true,
+  "A verified Drive account ID must enable restore even if the optional display-profile request is still pending.",
+);
+assert.equal(
+  panelSource.includes("Boolean(profile && drive.accountId)"),
+  false,
+  "Restore must not be disabled by a redundant display-profile request.",
+);
 const accountSource = await readFile(`${projectRoot}/src/lib/sync/accountContext.ts`, "utf8");
 assert.equal(accountSource.includes("if (!hasUsableDriveSession()) return LOCAL_ACCOUNT_ID"), false, "Token expiry must not discard the remembered account namespace.");
 const mockFetcherSource = await readFile(`${projectRoot}/src/mocks/mockFetcher.ts`, "utf8");

@@ -67,7 +67,10 @@ export function GoogleDrivePanel() {
     || profile?.emailAddress?.split("@")[0]?.trim()
     || "Google Drive account";
   const verifiedAccountLabel = profile?.emailAddress?.trim() || accountName;
-  const canConfirmRestore = Boolean(profile && drive.accountId);
+  // accountId is only set after the Drive profile has been verified by the
+  // active session. Do not block restore on the separate display-profile
+  // request, which can finish later or fail independently.
+  const canConfirmRestore = Boolean(drive.accountId);
   const reconnectRequired = drive.status === "reauth-required";
   const checkingConnection = drive.status === "initializing" || drive.status === "renewing";
 
