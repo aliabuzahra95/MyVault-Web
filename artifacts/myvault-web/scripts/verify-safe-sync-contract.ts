@@ -56,11 +56,11 @@ function emptyPending(): SyncPendingChanges {
 }
 
 const base = representativeAndroidBackup();
-assert.equal(base.files.length, 24, "The representative backup must cover the 21 current Android files and three legacy optional AI files.");
+assert.equal(base.files.length, 25, "The representative backup must cover the 22 current Android files and three legacy optional AI files.");
 assert.deepEqual(validateSyncCandidate(base), { valid: true, issues: [] });
 
 const initialBundle = createInitialMetadataRestoreBundle(1_780_000_000_100);
-assert.equal(initialBundle.files.length, 21, "A web-first backup must create exactly the metadata files Android currently writes.");
+assert.equal(initialBundle.files.length, 22, "A web-first backup must create exactly the metadata files Android currently writes.");
 assert.equal(initialBundle.files.some((file) => file.fileName === "ai_messages.json"), false, "A web-first backup must not invent legacy AI metadata.");
 assert.deepEqual(validateSyncCandidate(initialBundle), { valid: true, issues: [] });
 

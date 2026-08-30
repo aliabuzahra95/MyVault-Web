@@ -360,13 +360,11 @@ export function useGoogleDriveConnection() {
           const previewResult = await readDriveManifestPreview(token.accessToken);
           assertGoogleDriveSession(token, accountId);
           if (!previewResult.manifestPreview) return { previewResult, metadataRestore: null };
-          if (previewResult.manifestPreview.issues.length) {
-            throw new Error(previewResult.manifestPreview.issues[0]);
-          }
-          await verifyDriveManifestFiles(token.accessToken, previewResult.manifestPreview.manifest, previewResult.scan);
+          const driveVerification = await verifyDriveManifestFiles(token.accessToken, previewResult.manifestPreview.manifest, previewResult.scan);
           const metadataRestore = await stageVerifiedMetadataRestore({
             accessToken: token.accessToken,
             manifest: previewResult.manifestPreview.manifest,
+            compatibilityIssues: [...previewResult.manifestPreview.issues, ...driveVerification.issues],
           });
           assertGoogleDriveSession(token, accountId);
           return { previewResult, metadataRestore };

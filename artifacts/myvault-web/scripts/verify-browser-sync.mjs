@@ -376,7 +376,7 @@ try {
     };
   });
   assert.equal(driveCommit.result.status, "uploaded");
-  assert.equal(driveCommit.result.uploadedMetadataFiles, 21);
+  assert.equal(driveCommit.result.uploadedMetadataFiles, 22);
   assert.equal(driveCommit.result.localStateUpdated, true);
   assert.equal(driveCommit.pendingOperations, 0);
   assert.equal(driveCommit.base?.accountId, "permission-account-c");
@@ -384,7 +384,7 @@ try {
   const committedManifestFile = [...driveFiles.values()].find((file) => file.name === "sync_manifest.json");
   assert.ok(committedManifestFile);
   const committedManifest = JSON.parse(committedManifestFile.bytes.toString("utf8"));
-  assert.equal(committedManifest.entries.filter((entry) => entry.kind === "metadata").length, 21);
+  assert.equal(committedManifest.entries.filter((entry) => entry.kind === "metadata").length, 22);
   assert.equal(committedManifest.entries.some((entry) => entry.fileName === "ai_messages.json"), false);
   const notesEntry = committedManifest.entries.find((entry) => entry.fileName === "notes.json");
   const notesFile = driveFiles.get(notesEntry.cloudFileId);

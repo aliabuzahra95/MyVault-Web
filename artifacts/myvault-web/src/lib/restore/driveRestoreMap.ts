@@ -47,6 +47,7 @@ export const metadataFiles = [
   { fileName: "attachments.json", group: "Library", required: true, purpose: "Library file metadata and fileEntry pointers." },
   { fileName: "pdf_reading_progress.json", group: "Library", required: false, purpose: "PDF page and progress state." },
   { fileName: "pdf_annotations.json", group: "Library", required: false, purpose: "PDF highlights, page notes, text boxes, and display locations." },
+  { fileName: "pdf_annotation_geometry.json", group: "Library", required: false, purpose: "Ordered multi-rectangle geometry for selected-text PDF annotations." },
   { fileName: "source_backlinks.json", group: "Library", required: false, purpose: "Links from notes back to source PDF regions." },
   { fileName: "knowledge_tags.json", group: "Knowledge", required: false, purpose: "Knowledge tag definitions." },
   { fileName: "knowledge_tag_links.json", group: "Knowledge", required: false, purpose: "Links from knowledge tags to notes, attachments, and annotations." },
@@ -67,7 +68,7 @@ export const restoreDataGroups = [
   },
   {
     label: "Library",
-    files: ["attachments.json", "pdf_reading_progress.json", "pdf_annotations.json", "source_backlinks.json"],
+    files: ["attachments.json", "pdf_reading_progress.json", "pdf_annotations.json", "pdf_annotation_geometry.json", "source_backlinks.json"],
   },
   {
     label: "Study",

@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { getGoogleDriveStartupAction } from "../src/lib/googleDrive/authPolicy";
 import { createSingleFlight } from "../src/lib/googleDrive/singleFlight";
 import { retryOnceAfterAuthFailure } from "../src/lib/googleDrive/authRetry";
-import { stageVerifiedMetadataRestore, sha256Blob } from "../src/lib/restore/verifiedDriveRestore";
+import { stageVerifiedMetadataRestore, sha256Blob, verifyDriveManifestFiles } from "../src/lib/restore/verifiedDriveRestore";
 import type { DriveSyncManifest, DriveSyncManifestEntry } from "../src/lib/restore/driveManifestPreview";
 import { representativeAndroidBackup } from "./fixtures/representative-android-backup";
 import { handleGoogleDriveAuthRequest } from "../../../api/_googleDriveSession";
@@ -174,6 +174,10 @@ async function buildFixture() {
 }
 
 const fixture = await buildFixture();
+const arabicMetadata = fixture.blobs.get("verified-notes.json");
+assert.ok(arabicMetadata);
+const arabicText = await arabicMetadata.text();
+assert.ok(arabicMetadata.size > arabicText.length, "Manifest sizes are UTF-8 bytes, never JavaScript character counts.");
 const staged = await stageVerifiedMetadataRestore({
   accessToken: "test-token",
   manifest: fixture.manifest,
@@ -185,6 +189,31 @@ const staged = await stageVerifiedMetadataRestore({
 });
 assert.equal(staged.issues.length, 0);
 assert.equal(staged.files.length, representativeAndroidBackup().files.length);
+const conceptCards = staged.files.find((file) => file.fileName === "course_concept_cards.json")?.json as Array<Record<string, unknown>>;
+assert.equal("details" in conceptCards[0], false, "Android omits nullable concept details and Web must accept that shape.");
+
+const listingVerification = await verifyDriveManifestFiles(
+  "test-token",
+  fixture.manifest,
+  {
+    scannedAt: new Date().toISOString(),
+    rootFolder: { id: "root", name: "MyVault" },
+    folders: {
+      metadata: { id: "metadata", name: "metadata" },
+      files: { id: "files", name: "files" },
+      manifests: { id: "manifests", name: "manifests" },
+      backups: { id: "backups", name: "backups" },
+    },
+    manifestFile: { id: "manifest", name: "sync_manifest.json" },
+    ready: true,
+    missingPaths: [],
+  },
+  async (_token, parentId) => fixture.manifest.entries
+    .filter((entry) => entry.kind === (parentId === "metadata" ? "metadata" : "file"))
+    .map((entry) => ({ id: entry.cloudFileId, name: entry.fileName, size: String(entry.size + 7) })),
+);
+assert.deepEqual(listingVerification.issues, []);
+assert.ok(listingVerification.advisories.length > 0, "A stale Drive listing size is advisory until downloaded bytes are verified.");
 
 const corruptFixture = await buildFixture();
 const firstMetadata = corruptFixture.manifest.entries.find((entry) => entry.kind === "metadata");
@@ -196,7 +225,7 @@ await assert.rejects(
     manifest: corruptFixture.manifest,
     download: async (_token, entry) => corruptFixture.blobs.get(entry.cloudFileId)!,
   }),
-  /checksum verification failed/,
+  /downloaded SHA-256 checksum does not match/,
   "A corrupt object must abort before restore application.",
 );
 
@@ -216,6 +245,37 @@ await assert.rejects(
     download: async (_token, entry) => missingReference.blobs.get(entry.cloudFileId)!,
   }),
   /refers to missing backup file/,
+);
+
+const multipleFailures = await buildFixture();
+const conceptsEntry = multipleFailures.manifest.entries.find((entry) => entry.fileName === "course_concept_cards.json");
+const progressEntry = multipleFailures.manifest.entries.find((entry) => entry.fileName === "pdf_reading_progress.json");
+assert.ok(conceptsEntry && progressEntry);
+const concepts = JSON.parse(await multipleFailures.blobs.get(conceptsEntry.cloudFileId)!.text()) as Array<Record<string, unknown>>;
+delete concepts[0].term;
+const invalidConcepts = new Blob([JSON.stringify(concepts)], { type: "application/json" });
+multipleFailures.blobs.set(conceptsEntry.cloudFileId, invalidConcepts);
+conceptsEntry.size = invalidConcepts.size;
+conceptsEntry.sha256 = await sha256Blob(invalidConcepts);
+const progress = JSON.parse(await multipleFailures.blobs.get(progressEntry.cloudFileId)!.text()) as Array<Record<string, unknown>>;
+delete progress[0].attachmentId;
+const invalidProgress = new Blob([JSON.stringify(progress)], { type: "application/json" });
+multipleFailures.blobs.set(progressEntry.cloudFileId, invalidProgress);
+progressEntry.size = invalidProgress.size;
+progressEntry.sha256 = await sha256Blob(invalidProgress);
+await assert.rejects(
+  stageVerifiedMetadataRestore({
+    accessToken: "test-token",
+    manifest: multipleFailures.manifest,
+    download: async (_token, entry) => multipleFailures.blobs.get(entry.cloudFileId)!,
+  }),
+  (error: unknown) => {
+    assert.ok(error instanceof Error);
+    assert.match(error.message, /course_concept_cards\.json row 1 has an invalid or missing term/);
+    assert.match(error.message, /pdf_reading_progress\.json row 1 has an invalid or missing attachmentId/);
+    return true;
+  },
+  "All collection compatibility errors must be reported by one preflight.",
 );
 
 const projectRoot = fileURLToPath(new URL("..", import.meta.url));

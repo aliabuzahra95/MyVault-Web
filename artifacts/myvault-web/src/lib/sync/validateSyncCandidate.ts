@@ -3,27 +3,34 @@ import { metadataFiles } from "@/lib/restore/driveRestoreMap";
 
 type JsonRow = Record<string, unknown>;
 type FieldKind = "string" | "nullable-string" | "number" | "nullable-number" | "boolean";
+type FieldRule = { kind: FieldKind; required: boolean };
 
-const ANDROID_ROW_FIELDS: Record<string, Record<string, FieldKind>> = {
-  "courses.json": { id: "string", title: "string", rootFolderId: "nullable-string", lastOpenedNoteId: "nullable-string", createdAt: "number", updatedAt: "number" },
-  "course_concept_cards.json": { id: "string", courseId: "string", term: "string", arabicTerm: "nullable-string", definition: "string", details: "nullable-string", sortOrder: "number", createdAt: "number", updatedAt: "number" },
-  "course_folders.json": { id: "string", courseId: "string", title: "string", sortOrder: "number", createdAt: "number", updatedAt: "number" },
-  "course_notes.json": { id: "string", courseId: "string", folderId: "nullable-string", title: "string", body: "string", sortOrder: "number", createdAt: "number", updatedAt: "number", lastOpenedAt: "nullable-number" },
-  "course_sticky_notes.json": { id: "string", courseId: "string", text: "string", sortOrder: "number", createdAt: "number", updatedAt: "number" },
-  "folders.json": { id: "string", parentId: "nullable-string", name: "string", description: "nullable-string", orderIndex: "number", isFavourite: "boolean", mode: "string", createdAt: "number", updatedAt: "number", deletedAt: "nullable-number" },
-  "folder_sticky_notes.json": { id: "string", folderId: "string", text: "string", createdAt: "number", updatedAt: "number" },
-  "notes.json": { id: "string", folderId: "nullable-string", parentNoteId: "nullable-string", title: "string", bodyPlainText: "string", isPinned: "boolean", isFolderPinned: "boolean", isFavourite: "boolean", orderIndex: "number", createdAt: "number", updatedAt: "number", deletedAt: "nullable-number" },
-  "blocks.json": { id: "string", noteId: "string", type: "string", content: "string", orderIndex: "number" },
-  "tags.json": { name: "string" },
-  "note_tags.json": { noteId: "string", tagName: "string" },
-  "note_tables.json": { id: "string", noteId: "string", rowCount: "number", columnCount: "number", cellsJson: "string", orderIndex: "number", createdAt: "number", updatedAt: "number" },
-  "note_versions.json": { id: "string", noteId: "string", title: "string", bodyPlainText: "string", richTextJson: "nullable-string", richHtml: "nullable-string", wordCount: "number", characterCount: "number", createdAt: "number" },
-  "attachments.json": { id: "string", noteId: "nullable-string", libraryFolderId: "nullable-string", fileName: "string", mimeType: "string", sizeBytes: "number", localPath: "nullable-string", remoteUrl: "nullable-string", isPinned: "boolean", createdAt: "number", deletedAt: "nullable-number", fileEntry: "string" },
-  "pdf_reading_progress.json": { attachmentId: "string", pageIndex: "number", pageCount: "number", progressPercent: "number", lastOpenedAt: "number", updatedAt: "number" },
-  "pdf_annotations.json": { id: "string", attachmentId: "string", libraryFolderId: "nullable-string", pageIndex: "number", left: "number", top: "number", right: "number", bottom: "number", color: "string", noteText: "string", annotationType: "string", textSize: "number", backgroundColor: "string", displayTitle: "nullable-string", displayFolderId: "nullable-string", createdAt: "number", updatedAt: "number" },
-  "source_backlinks.json": { id: "string", noteId: "string", attachmentId: "string", annotationId: "nullable-string", pageIndex: "number", left: "number", top: "number", right: "number", bottom: "number", createdAt: "number" },
-  "knowledge_tags.json": { id: "string", name: "string", createdAt: "number" },
-  "knowledge_tag_links.json": { tagId: "string", targetType: "string", targetId: "string", createdAt: "number" },
+const required = (kind: FieldKind): FieldRule => ({ kind, required: true });
+const optional = (kind: FieldKind): FieldRule => ({ kind, required: false });
+
+// Required fields mirror Android's get* restore calls. Fields restored through
+// opt* are optional because JSONObject.put(key, null) omits the key entirely.
+const ANDROID_ROW_FIELDS: Record<string, Record<string, FieldRule>> = {
+  "courses.json": { id: required("string"), title: required("string"), rootFolderId: optional("nullable-string"), lastOpenedNoteId: optional("nullable-string"), createdAt: required("number"), updatedAt: required("number") },
+  "course_concept_cards.json": { id: required("string"), courseId: required("string"), term: required("string"), arabicTerm: optional("nullable-string"), definition: optional("string"), details: optional("nullable-string"), sortOrder: optional("number"), createdAt: required("number"), updatedAt: required("number") },
+  "course_folders.json": { id: required("string"), courseId: required("string"), title: required("string"), sortOrder: optional("number"), createdAt: required("number"), updatedAt: required("number") },
+  "course_notes.json": { id: required("string"), courseId: required("string"), folderId: required("string"), title: required("string"), body: optional("string"), sortOrder: optional("number"), createdAt: required("number"), updatedAt: required("number"), lastOpenedAt: optional("nullable-number") },
+  "course_sticky_notes.json": { id: required("string"), courseId: required("string"), text: required("string"), sortOrder: optional("number"), createdAt: required("number"), updatedAt: required("number") },
+  "folders.json": { id: required("string"), parentId: optional("nullable-string"), name: required("string"), description: optional("nullable-string"), orderIndex: required("number"), isFavourite: required("boolean"), mode: optional("string"), createdAt: required("number"), updatedAt: required("number"), deletedAt: optional("nullable-number"), colorKey: optional("nullable-string") },
+  "folder_sticky_notes.json": { id: required("string"), folderId: required("string"), text: required("string"), createdAt: required("number"), updatedAt: required("number") },
+  "notes.json": { id: required("string"), folderId: optional("nullable-string"), parentNoteId: optional("nullable-string"), title: required("string"), bodyPlainText: required("string"), isPinned: required("boolean"), isFolderPinned: optional("boolean"), isFavourite: required("boolean"), orderIndex: optional("number"), createdAt: required("number"), updatedAt: required("number"), deletedAt: optional("nullable-number") },
+  "blocks.json": { id: required("string"), noteId: required("string"), type: required("string"), content: required("string"), orderIndex: required("number") },
+  "tags.json": { name: required("string") },
+  "note_tags.json": { noteId: required("string"), tagName: required("string") },
+  "note_tables.json": { id: required("string"), noteId: required("string"), rowCount: required("number"), columnCount: required("number"), cellsJson: required("string"), orderIndex: required("number"), createdAt: required("number"), updatedAt: required("number") },
+  "note_versions.json": { id: required("string"), noteId: required("string"), title: optional("string"), bodyPlainText: optional("string"), richTextJson: optional("nullable-string"), richHtml: optional("nullable-string"), wordCount: optional("number"), characterCount: optional("number"), createdAt: optional("number") },
+  "attachments.json": { id: required("string"), noteId: optional("nullable-string"), libraryFolderId: optional("nullable-string"), fileName: required("string"), mimeType: required("string"), sizeBytes: required("number"), localPath: optional("nullable-string"), remoteUrl: optional("nullable-string"), isPinned: optional("boolean"), createdAt: required("number"), deletedAt: optional("nullable-number"), fileEntry: optional("string") },
+  "pdf_reading_progress.json": { attachmentId: required("string"), pageIndex: required("number"), pageCount: required("number"), progressPercent: optional("number"), lastOpenedAt: required("number"), updatedAt: required("number") },
+  "pdf_annotations.json": { id: required("string"), attachmentId: required("string"), libraryFolderId: optional("nullable-string"), pageIndex: required("number"), left: required("number"), top: required("number"), right: required("number"), bottom: required("number"), color: required("string"), noteText: optional("nullable-string"), selectedText: optional("nullable-string"), annotationType: optional("string"), textSize: optional("number"), backgroundColor: optional("string"), displayTitle: optional("nullable-string"), displayFolderId: optional("nullable-string"), createdAt: required("number"), updatedAt: required("number") },
+  "pdf_annotation_geometry.json": { annotationId: required("string"), orderIndex: required("number"), pageIndex: required("number"), left: required("number"), top: required("number"), right: required("number"), bottom: required("number") },
+  "source_backlinks.json": { id: required("string"), noteId: required("string"), attachmentId: required("string"), annotationId: optional("nullable-string"), pageIndex: required("number"), left: optional("nullable-number"), top: optional("nullable-number"), right: optional("nullable-number"), bottom: optional("nullable-number"), createdAt: required("number") },
+  "knowledge_tags.json": { id: required("string"), name: required("string"), createdAt: required("number") },
+  "knowledge_tag_links.json": { tagId: required("string"), targetType: required("string"), targetId: required("string"), createdAt: required("number") },
 };
 
 function isRow(value: unknown): value is JsonRow {
@@ -60,17 +67,14 @@ function validateAndroidRowShapes(bundle: MetadataRestoreBundle, issues: string[
         issues.push(`${fileName} row ${index + 1} is not an object.`);
         return;
       }
-      for (const [field, kind] of Object.entries(fields)) {
-        if (!Object.prototype.hasOwnProperty.call(value, field) || !matchesKind(value[field], kind)) {
-          issues.push(`${fileName} row ${index + 1} has an invalid or missing ${field}.`);
+      for (const [field, rule] of Object.entries(fields)) {
+        const present = Object.prototype.hasOwnProperty.call(value, field);
+        if ((!present && rule.required) || (present && !matchesKind(value[field], rule.kind))) {
+          issues.push(`${fileName} row ${index + 1} has an invalid${rule.required ? " or missing" : ""} ${field}.`);
         }
       }
     });
   }
-}
-
-function activeRows(bundle: MetadataRestoreBundle, fileName: string) {
-  return rowsFor(bundle, fileName).filter((row) => typeof row.deletedAt !== "number");
 }
 
 function stableIds(rows: JsonRow[], label: string, issues: string[]) {
@@ -97,12 +101,14 @@ export function validateSyncCandidate(bundle: MetadataRestoreBundle) {
   }
   validateAndroidRowShapes(bundle, issues);
 
-  const folders = activeRows(bundle, "folders.json");
-  const notes = activeRows(bundle, "notes.json");
-  const blocks = activeRows(bundle, "blocks.json");
-  const attachments = activeRows(bundle, "attachments.json");
-  const annotations = activeRows(bundle, "pdf_annotations.json");
-  const courses = activeRows(bundle, "courses.json");
+  // Android validates references against the complete backup, including
+  // deleted/tombstoned entities needed by Recently Deleted and history.
+  const folders = rowsFor(bundle, "folders.json");
+  const notes = rowsFor(bundle, "notes.json");
+  const blocks = rowsFor(bundle, "blocks.json");
+  const attachments = rowsFor(bundle, "attachments.json");
+  const annotations = rowsFor(bundle, "pdf_annotations.json");
+  const courses = rowsFor(bundle, "courses.json");
   stableIds(rowsFor(bundle, "folders.json"), "folders.json", issues);
   stableIds(rowsFor(bundle, "notes.json"), "notes.json", issues);
   stableIds(rowsFor(bundle, "attachments.json"), "attachments.json", issues);
@@ -139,48 +145,57 @@ export function validateSyncCandidate(bundle: MetadataRestoreBundle) {
     const attachmentId = stringValue(row, "attachmentId");
     if (!attachmentId || !attachmentIds.has(attachmentId)) issues.push(`PDF annotation ${stringValue(row, "id")} refers to a missing attachment.`);
   });
-  activeRows(bundle, "pdf_reading_progress.json").forEach((row) => {
+  const geometryKeys = new Set<string>();
+  rowsFor(bundle, "pdf_annotation_geometry.json").forEach((row) => {
+    const annotationId = stringValue(row, "annotationId");
+    const orderIndex = row.orderIndex;
+    if (!annotationIds.has(annotationId)) issues.push(`PDF annotation geometry refers to missing annotation ${annotationId}.`);
+    const key = `${annotationId}:${String(orderIndex)}`;
+    if (geometryKeys.has(key)) issues.push(`PDF annotation geometry contains duplicate segment ${key}.`);
+    geometryKeys.add(key);
+  });
+  rowsFor(bundle, "pdf_reading_progress.json").forEach((row) => {
     const attachmentId = stringValue(row, "attachmentId");
     if (!attachmentId || !attachmentIds.has(attachmentId)) issues.push("PDF reading progress refers to a missing attachment.");
   });
-  activeRows(bundle, "folder_sticky_notes.json").forEach((row) => {
+  rowsFor(bundle, "folder_sticky_notes.json").forEach((row) => {
     if (!folderIds.has(stringValue(row, "folderId"))) issues.push(`Folder sticky note ${stringValue(row, "id")} refers to a missing folder.`);
   });
-  activeRows(bundle, "course_concept_cards.json").forEach((row) => {
+  rowsFor(bundle, "course_concept_cards.json").forEach((row) => {
     if (!courseIds.has(stringValue(row, "courseId"))) issues.push(`Course concept ${stringValue(row, "id")} refers to a missing course.`);
   });
-  const legacyCourseFolderIds = new Set(activeRows(bundle, "course_folders.json").map((row) => stringValue(row, "id")));
-  activeRows(bundle, "course_folders.json").forEach((row) => {
+  const legacyCourseFolderIds = new Set(rowsFor(bundle, "course_folders.json").map((row) => stringValue(row, "id")));
+  rowsFor(bundle, "course_folders.json").forEach((row) => {
     if (!courseIds.has(stringValue(row, "courseId"))) issues.push(`Legacy course folder ${stringValue(row, "id")} refers to a missing course.`);
   });
-  activeRows(bundle, "course_notes.json").forEach((row) => {
+  rowsFor(bundle, "course_notes.json").forEach((row) => {
     const courseId = stringValue(row, "courseId");
     const folderId = stringValue(row, "folderId");
     if (!courseIds.has(courseId)) issues.push(`Legacy course note ${stringValue(row, "id")} refers to a missing course.`);
     if (folderId && !legacyCourseFolderIds.has(folderId)) issues.push(`Legacy course note ${stringValue(row, "id")} refers to a missing course folder.`);
   });
-  activeRows(bundle, "course_sticky_notes.json").forEach((row) => {
+  rowsFor(bundle, "course_sticky_notes.json").forEach((row) => {
     if (!courseIds.has(stringValue(row, "courseId"))) issues.push(`Legacy course sticky note ${stringValue(row, "id")} refers to a missing course.`);
   });
-  activeRows(bundle, "note_tables.json").forEach((row) => {
+  rowsFor(bundle, "note_tables.json").forEach((row) => {
     if (!noteIds.has(stringValue(row, "noteId"))) issues.push(`Note table ${stringValue(row, "id")} refers to a missing note.`);
   });
-  activeRows(bundle, "note_versions.json").forEach((row) => {
+  rowsFor(bundle, "note_versions.json").forEach((row) => {
     if (!noteIds.has(stringValue(row, "noteId"))) issues.push(`Note version ${stringValue(row, "id")} refers to a missing note.`);
   });
-  const tagNames = new Set(activeRows(bundle, "tags.json").map((row) => stringValue(row, "name")));
-  activeRows(bundle, "note_tags.json").forEach((row) => {
+  const tagNames = new Set(rowsFor(bundle, "tags.json").map((row) => stringValue(row, "name")));
+  rowsFor(bundle, "note_tags.json").forEach((row) => {
     if (!noteIds.has(stringValue(row, "noteId"))) issues.push("A note tag refers to a missing note.");
     if (!tagNames.has(stringValue(row, "tagName"))) issues.push("A note tag refers to a missing tag.");
   });
-  activeRows(bundle, "source_backlinks.json").forEach((row) => {
+  rowsFor(bundle, "source_backlinks.json").forEach((row) => {
     const annotationId = stringValue(row, "annotationId");
     if (!noteIds.has(stringValue(row, "noteId"))) issues.push(`Source backlink ${stringValue(row, "id")} refers to a missing note.`);
     if (!attachmentIds.has(stringValue(row, "attachmentId"))) issues.push(`Source backlink ${stringValue(row, "id")} refers to a missing attachment.`);
     if (annotationId && !annotationIds.has(annotationId)) issues.push(`Source backlink ${stringValue(row, "id")} refers to a missing annotation.`);
   });
-  const knowledgeTagIds = new Set(activeRows(bundle, "knowledge_tags.json").map((row) => stringValue(row, "id")));
-  activeRows(bundle, "knowledge_tag_links.json").forEach((row) => {
+  const knowledgeTagIds = new Set(rowsFor(bundle, "knowledge_tags.json").map((row) => stringValue(row, "id")));
+  rowsFor(bundle, "knowledge_tag_links.json").forEach((row) => {
     const targetType = stringValue(row, "targetType");
     const targetId = stringValue(row, "targetId");
     if (!knowledgeTagIds.has(stringValue(row, "tagId"))) issues.push("A knowledge-tag link refers to a missing knowledge tag.");

@@ -2,12 +2,13 @@ import type { DriveSyncManifestEntry } from "../../src/lib/restore/driveManifest
 import type { MetadataRestoreBundle, RestoredMetadataFile } from "../../src/lib/restore/metadataRestore";
 
 function metadataFile(fileName: string, json: unknown): RestoredMetadataFile {
+  const encoded = JSON.stringify(json);
   return {
     fileName,
     entryPath: `metadata/${fileName}`,
     backupEntry: fileName,
     cloudFileId: `drive-metadata-${fileName}`,
-    size: JSON.stringify(json).length,
+    size: new TextEncoder().encode(encoded).byteLength,
     updatedAt: 1_780_000_000_000,
     itemCount: Array.isArray(json) ? json.length : null,
     json,
@@ -60,7 +61,7 @@ const jsonFiles: Record<string, unknown> = {
     { id: "course-personal", title: "Personal course", rootFolderId: "folder-personal", lastOpenedNoteId: "note-personal", createdAt: 50, updatedAt: 100, workspace: "personal" },
   ],
   "course_concept_cards.json": [
-    { id: "concept-niyyah", courseId: "course-fiqh", term: "Niyyah", arabicTerm: "النية", definition: "Intention", details: null, sortOrder: 0, createdAt: 50, updatedAt: 100, futureField: 9 },
+    { id: "concept-niyyah", courseId: "course-fiqh", term: "Niyyah", arabicTerm: "النية", definition: "Intention", sortOrder: 0, createdAt: 50, updatedAt: 100, futureField: 9 },
   ],
   "course_folders.json": [
     { id: "legacy-course-folder", courseId: "course-fiqh", title: "Legacy lessons", sortOrder: 0, createdAt: 50, updatedAt: 100 },
@@ -118,6 +119,10 @@ const jsonFiles: Record<string, unknown> = {
   "pdf_annotations.json": [
     { id: "annotation-highlight", attachmentId: "pdf-aqidah", libraryFolderId: "folder-library", pageIndex: 12, left: 61.4, top: 132.7, right: 505.9, bottom: 158.1, color: "yellow", noteText: "مهم", annotationType: "highlight", textSize: 16, backgroundColor: "none", displayTitle: "Exact geometry", displayFolderId: "folder-library", createdAt: 90, updatedAt: 100, futureGeometry: { quadPoints: [1.1, 2.2, 3.3, 4.4] } },
     { id: "annotation-personal", attachmentId: "pdf-personal", libraryFolderId: "folder-personal", pageIndex: 2, left: 0, top: 0, right: 0, bottom: 0, color: "yellow", noteText: "Private", annotationType: "page_note", textSize: 16, backgroundColor: "none", displayTitle: null, displayFolderId: "folder-personal", createdAt: 90, updatedAt: 100 },
+  ],
+  "pdf_annotation_geometry.json": [
+    { annotationId: "annotation-highlight", orderIndex: 0, pageIndex: 12, left: 61.4, top: 132.7, right: 260.2, bottom: 145.4, futureGeometryField: true },
+    { annotationId: "annotation-highlight", orderIndex: 1, pageIndex: 12, left: 80.1, top: 146.2, right: 505.9, bottom: 158.1 },
   ],
   "source_backlinks.json": [
     { id: "backlink-one", noteId: "note-tawakkul", attachmentId: "pdf-aqidah", annotationId: "annotation-highlight", pageIndex: 12, left: 61.4, top: 132.7, right: 505.9, bottom: 158.1, createdAt: 100, unknownBacklinkField: "keep" },

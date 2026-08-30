@@ -11,6 +11,7 @@
     "verify:workspace": "tsx scripts/verify-islamic-corpus-projection.ts",
     "verify:sync": "tsx scripts/verify-safe-sync-contract.ts",
     "verify:drive-auth": "tsx scripts/verify-drive-auth-restore.ts",
+    "verify:android-backup": "tsx scripts/verify-android-backup-directory.ts",
     "verify:pdf-performance": "node scripts/verify-pdf-performance.mjs",
     "verify:sync-browser": "tsx scripts/verify-browser-sync.mjs"
   },

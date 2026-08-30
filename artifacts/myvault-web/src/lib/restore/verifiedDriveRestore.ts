@@ -4,6 +4,18 @@ import type { DriveSyncManifest, DriveSyncManifestEntry } from "@/lib/restore/dr
 import { validateSyncCandidate } from "@/lib/sync/validateSyncCandidate";
 
 export type RestoreBlobDownloader = (accessToken: string, entry: DriveSyncManifestEntry) => Promise<Blob>;
+export type DriveChildrenLister = typeof listDriveChildren;
+
+export class RestoreCompatibilityError extends Error {
+  constructor(readonly issues: string[]) {
+    super(`Restore compatibility check found:\n${issues.map((issue) => `- ${issue}`).join("\n")}`);
+    this.name = "RestoreCompatibilityError";
+  }
+}
+
+function uniqueIssues(issues: string[]) {
+  return [...new Set(issues.filter(Boolean))];
+}
 
 function hexadecimal(bytes: ArrayBuffer) {
   return [...new Uint8Array(bytes)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -46,54 +58,77 @@ function validateAttachmentReferences(bundle: MetadataRestoreBundle) {
   });
 }
 
-export async function verifyDriveManifestFiles(accessToken: string, manifest: DriveSyncManifest, scan: MyVaultDriveScan) {
+export async function verifyDriveManifestFiles(
+  accessToken: string,
+  manifest: DriveSyncManifest,
+  scan: MyVaultDriveScan,
+  listChildren: DriveChildrenLister = listDriveChildren,
+) {
+  const issues: string[] = [];
+  const advisories: string[] = [];
   if (!scan.folders.metadata || !scan.folders.files) {
-    throw new Error("The MyVault Drive backup is missing its metadata or files folder.");
+    return { issues: ["The MyVault Drive backup is missing its metadata or files folder."], advisories };
   }
   const [metadataChildren, fileChildren] = await Promise.all([
-    listDriveChildren(accessToken, scan.folders.metadata.id),
-    listDriveChildren(accessToken, scan.folders.files.id),
+    listChildren(accessToken, scan.folders.metadata.id),
+    listChildren(accessToken, scan.folders.files.id),
   ]);
   const metadataIds = new Map(metadataChildren.map((file) => [file.id, file]));
   const fileIds = new Map(fileChildren.map((file) => [file.id, file]));
   for (const entry of manifest.entries) {
     const record = (entry.kind === "metadata" ? metadataIds : fileIds).get(entry.cloudFileId);
-    if (!record) throw new Error(`Google Drive no longer contains ${entry.fileName}. Restore was not started.`);
+    if (!record) {
+      issues.push(`Google Drive no longer contains ${entry.fileName}.`);
+      continue;
+    }
     const remoteSize = Number(record.size);
     if (Number.isFinite(remoteSize) && remoteSize !== entry.size) {
-      throw new Error(`Google Drive reports a different size for ${entry.fileName}. Restore was not started.`);
+      // Drive listing metadata can be stale. Downloaded bytes and SHA-256 remain
+      // authoritative and are checked before any local restore is applied.
+      advisories.push(`Google Drive listing size differs for ${entry.fileName}; downloaded bytes will be verified.`);
     }
   }
+  return { issues, advisories };
 }
 
 export async function stageVerifiedMetadataRestore({
   accessToken,
   manifest,
   download = (token, entry) => downloadDriveFileBlob(token, entry.cloudFileId, "application/json"),
+  compatibilityIssues = [],
 }: {
   accessToken: string;
   manifest: DriveSyncManifest;
   download?: RestoreBlobDownloader;
+  compatibilityIssues?: string[];
 }) {
-  const manifestIssues = validateManifestStructure(manifest);
-  if (manifestIssues.length) throw new Error(manifestIssues[0]);
-
-  const downloadedFiles = await Promise.all(getMetadataManifestEntries(manifest).map(async (entry) => {
-    const blob = await download(accessToken, entry);
-    if (blob.size !== entry.size) throw new Error(`Metadata size verification failed for ${entry.fileName}. Restore was not started.`);
-    if (entry.sha256 && await sha256Blob(blob) !== entry.sha256.toLowerCase()) {
-      throw new Error(`Metadata checksum verification failed for ${entry.fileName}. Restore was not started.`);
-    }
+  const issues = [...compatibilityIssues, ...validateManifestStructure(manifest)];
+  const outcomes = await Promise.all(getMetadataManifestEntries(manifest).map(async (entry) => {
     try {
-      return { entry, json: JSON.parse(await blob.text()) as unknown };
-    } catch {
-      throw new Error(`Google Drive metadata ${entry.fileName} is not valid JSON. Restore was not started.`);
+      const blob = await download(accessToken, entry);
+      const entryIssues: string[] = [];
+      if (blob.size !== entry.size) entryIssues.push(`${entry.fileName}: downloaded byte size ${blob.size} does not match manifest size ${entry.size}.`);
+      if (entry.sha256 && await sha256Blob(blob) !== entry.sha256.toLowerCase()) {
+        entryIssues.push(`${entry.fileName}: downloaded SHA-256 checksum does not match the manifest.`);
+      }
+      if (entryIssues.length) return { file: null, issues: entryIssues };
+      try {
+        return { file: { entry, json: JSON.parse(await blob.text()) as unknown }, issues: [] };
+      } catch {
+        return { file: null, issues: [`${entry.fileName}: downloaded metadata is not valid JSON.`] };
+      }
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : "download failed";
+      return { file: null, issues: [`${entry.fileName}: ${detail}`] };
     }
   }));
 
+  issues.push(...outcomes.flatMap((outcome) => outcome.issues));
+  const downloadedFiles = outcomes.flatMap((outcome) => outcome.file ? [outcome.file] : []);
   const bundle = buildMetadataRestoreBundle(manifest, downloadedFiles);
   const candidate = validateSyncCandidate(bundle);
-  const issues = [...bundle.issues, ...candidate.issues, ...validateAttachmentReferences(bundle)];
-  if (issues.length) throw new Error(issues[0]);
+  issues.push(...bundle.issues, ...candidate.issues, ...validateAttachmentReferences(bundle));
+  const allIssues = uniqueIssues(issues);
+  if (allIssues.length) throw new RestoreCompatibilityError(allIssues);
   return bundle;
 }
