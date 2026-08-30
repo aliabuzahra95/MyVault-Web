@@ -215,6 +215,31 @@ const listingVerification = await verifyDriveManifestFiles(
 assert.deepEqual(listingVerification.issues, []);
 assert.ok(listingVerification.advisories.length > 0, "A stale Drive listing size is advisory until downloaded bytes are verified.");
 
+const legacySizeFixture = await buildFixture();
+const legacyProgressEntry = legacySizeFixture.manifest.entries.find((entry) => entry.fileName === "pdf_reading_progress.json");
+assert.ok(legacyProgressEntry);
+legacyProgressEntry.size += 11;
+await stageVerifiedMetadataRestore({
+  accessToken: "test-token",
+  manifest: legacySizeFixture.manifest,
+  download: async (_token, entry) => legacySizeFixture.blobs.get(entry.cloudFileId)!,
+});
+
+const uncheckedSizeFixture = await buildFixture();
+const uncheckedProgressEntry = uncheckedSizeFixture.manifest.entries.find((entry) => entry.fileName === "pdf_reading_progress.json");
+assert.ok(uncheckedProgressEntry);
+uncheckedProgressEntry.size += 11;
+uncheckedProgressEntry.sha256 = "";
+await assert.rejects(
+  stageVerifiedMetadataRestore({
+    accessToken: "test-token",
+    manifest: uncheckedSizeFixture.manifest,
+    download: async (_token, entry) => uncheckedSizeFixture.blobs.get(entry.cloudFileId)!,
+  }),
+  /no checksum is available/,
+  "A size mismatch without a matching checksum must remain blocking.",
+);
+
 const corruptFixture = await buildFixture();
 const firstMetadata = corruptFixture.manifest.entries.find((entry) => entry.kind === "metadata");
 assert.ok(firstMetadata);

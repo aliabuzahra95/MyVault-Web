@@ -107,9 +107,13 @@ export async function stageVerifiedMetadataRestore({
     try {
       const blob = await download(accessToken, entry);
       const entryIssues: string[] = [];
-      if (blob.size !== entry.size) entryIssues.push(`${entry.fileName}: downloaded byte size ${blob.size} does not match manifest size ${entry.size}.`);
-      if (entry.sha256 && await sha256Blob(blob) !== entry.sha256.toLowerCase()) {
+      const checksum = entry.sha256 ? await sha256Blob(blob) : null;
+      const checksumMatches = checksum === null || checksum === entry.sha256.toLowerCase();
+      if (!checksumMatches) {
         entryIssues.push(`${entry.fileName}: downloaded SHA-256 checksum does not match the manifest.`);
+      }
+      if (blob.size !== entry.size && checksum === null) {
+        entryIssues.push(`${entry.fileName}: downloaded byte size ${blob.size} does not match manifest size ${entry.size}, and no checksum is available.`);
       }
       if (entryIssues.length) return { file: null, issues: entryIssues };
       try {

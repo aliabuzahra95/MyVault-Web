@@ -10,8 +10,8 @@
 ## Root causes and changes
 
 1. `course_concept_cards.json`: Android writes plural `details`, and `JSONObject.put("details", null)` omits the key. Web incorrectly required the key. Web now distinguishes Android-required `get*` fields from optional/defaulted `opt*` fields.
-2. `attachments.json`: Web rejected a Drive listing-size mismatch before downloading the object. Listing size is now advisory; the downloaded object must still match manifest byte size and SHA-256.
-3. `pdf_reading_progress.json`: manifest size is exact UTF-8 bytes, not JavaScript string characters. Fixtures and checks now use Blob/TextEncoder byte size. Downloaded bytes and SHA-256 remain mandatory.
+2. `attachments.json`: Web rejected a Drive listing-size mismatch before downloading the object. Listing size is now advisory; downloaded bytes are verified against manifest SHA-256.
+3. `pdf_reading_progress.json`: current Android size is exact UTF-8 bytes, not JavaScript string characters. Fixtures now use Blob/TextEncoder byte size. A legacy size disagreement is accepted only when downloaded SHA-256 matches exactly; without a checksum, exact byte size remains mandatory.
 4. Tombstones: Web previously excluded deleted notes/folders/attachments from relationship identity sets, falsely rejecting their blocks and version history. Validation now matches Android and uses the complete backup identity set.
 5. PDF geometry: `pdf_annotation_geometry.json` is now a recognized Android metadata collection with parent and ordered-segment validation.
 6. Preflight: metadata downloads, byte/hash checks, JSON parsing, row validation, and relationships now aggregate all compatibility errors into one `RestoreCompatibilityError` before restore can apply.
@@ -20,7 +20,7 @@
 
 - Manifest schema/storage/path validation remains active.
 - Missing Drive objects remain blocking.
-- Downloaded byte-size mismatch remains blocking.
+- Downloaded byte-size mismatch remains blocking unless the downloaded SHA-256 exactly matches the manifest checksum.
 - Downloaded SHA-256 mismatch remains blocking.
 - Invalid JSON, missing required collections, invalid row types, duplicate IDs, and broken references remain blocking.
 - Unknown additive fields and omitted Android-optional fields are accepted.
@@ -47,7 +47,7 @@
 | tables | required core row | tombstone references could fail | accepted against complete note set |
 | versions | sparse legacy rows valid | over-required optional snapshot fields; tombstones failed | accepted |
 | attachments | nullable/defaulted location and state | over-required optional keys; listing size blocked early | accepted; bytes/hash authoritative |
-| PDF progress | optional percentage | over-required percentage; UTF-8 fixture size wrong | accepted; exact byte/hash checks retained |
+| PDF progress | optional percentage | over-required percentage; UTF-8 fixture size wrong; legacy size mismatch blocked before checksum authority | accepted; checksum-authoritative legacy fallback retained |
 | PDF annotations | optional text/type/display fields | over-required optional fields | accepted |
 | PDF geometry | optional additive collection | unregistered/unvalidated | recognized, validated, preserved |
 | source backlinks | nullable annotation/coordinates | over-required coordinates | accepted |

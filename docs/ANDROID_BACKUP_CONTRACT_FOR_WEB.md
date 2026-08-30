@@ -17,7 +17,7 @@ Status: authoritative Web-side map of the existing Android contract. Android rem
 - `size` is the exact uploaded file byte count (`File.length()`), not JavaScript character count.
 - `sha256` is calculated over those exact bytes.
 - The current Drive metadata/object contract has no encryption envelope. No encryption behavior was added, removed, or changed by Web.
-- A Drive listing's `size` is advisory because listing metadata can be stale. The downloaded bytes must match manifest `size` and SHA-256 before restore can proceed.
+- A Drive listing's `size` is advisory because listing metadata can be stale. Downloaded SHA-256 is authoritative. A downloaded-size mismatch is accepted only when the manifest SHA-256 matches exactly; without a checksum, exact size remains mandatory.
 - Unknown additive JSON fields are accepted and retained in the staged bundle.
 
 ## Required and optional field rule
@@ -64,4 +64,4 @@ Current Android writes theme compatibility fields, workspace/accent/font prefere
 
 ## Web application boundary
 
-Web performs complete download, byte-size verification, checksum verification, JSON parsing, schema validation, and relationship validation before any IndexedDB mutation. The existing unsynchronised-change guard remains in place. Application of the staged bundle and its sync base remains one IndexedDB transaction.
+Web performs complete download, byte-size/checksum verification, JSON parsing, schema validation, and relationship validation before any IndexedDB mutation. The existing unsynchronised-change guard remains in place. Application of the staged bundle and its sync base remains one IndexedDB transaction.
