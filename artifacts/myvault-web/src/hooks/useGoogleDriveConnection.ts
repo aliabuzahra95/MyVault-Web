@@ -23,9 +23,8 @@ import {
 } from "@/lib/restore/driveManifestPreview";
 import { type MetadataRestoreBundle } from "@/lib/restore/metadataRestore";
 import {
-  applyMetadataRestoreAtomically,
+  applyMetadataRestorePreservingLocalChangesAtomically,
   createLocalRecoverySnapshot,
-  hasPendingLocalChanges,
   loadLocalSyncBase,
   loadMetadataRestoreBundle,
   saveLocalSyncBase,
@@ -393,11 +392,6 @@ export function useGoogleDriveConnection() {
       setState((current) => ({ ...current, status: "restoring-metadata", scan, manifestPreview, error: null }));
       if (!metadataRestore) throw new Error("The Drive backup could not be staged.");
 
-      if (await hasPendingLocalChanges()) {
-        await createLocalRecoverySnapshot("restore-blocked-dirty-workspace");
-        throw new Error("This browser has unsynchronised website changes. Restore was stopped so those changes cannot be erased. Use the safe sync check to reconcile them with Drive.");
-      }
-
       await createLocalRecoverySnapshot("before-drive-restore");
       assertGoogleDriveSession(token, accountId);
       const base = {
@@ -407,7 +401,7 @@ export function useGoogleDriveConnection() {
         bundle: structuredClone(metadataRestore),
       } as const;
       assertGoogleDriveSession(token, accountId);
-      await applyMetadataRestoreAtomically(metadataRestore, base);
+      await applyMetadataRestorePreservingLocalChangesAtomically(metadataRestore, base);
 
       setState((current) => ({
         ...current,

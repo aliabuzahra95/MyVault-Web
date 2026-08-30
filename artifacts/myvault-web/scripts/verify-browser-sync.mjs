@@ -81,6 +81,97 @@ try {
   }, { accountA, accountB });
   assert.deepEqual(targetedClear, { accountAEmpty: true, accountBTitle: "Account B only" });
 
+  const preservingRestore = await firstPage.evaluate(async ({ accountA, bundleA }) => {
+    const account = await import("/src/lib/sync/accountContext.ts");
+    const store = await import("/src/lib/restore/localRestoreStore.ts");
+    const revision = await import("/src/lib/sync/revision.ts");
+    account.setActiveGoogleAccount(accountA);
+    await store.clearLocalWorkspaceData();
+
+    const originalBundle = structuredClone(bundleA);
+    await store.saveMetadataRestoreBundle(originalBundle);
+    const originalBase = {
+      schemaVersion: 1,
+      accountId: accountA,
+      revision: await revision.computeBundleRevision(originalBundle),
+      bundle: structuredClone(originalBundle),
+    };
+    await store.saveLocalSyncBase(originalBase);
+    await store.saveLocalCreatedNote({
+      id: "pending-browser-note",
+      folderId: null,
+      parentNoteId: null,
+      title: "Unsynchronised browser note",
+      bodyPreview: "Must survive Drive restore",
+      wordCount: 4,
+      characterCount: 26,
+      isPinned: false,
+      isFolderPinned: false,
+      orderIndex: 999,
+      tagNames: [],
+      createdAt: 350,
+      updatedAt: 350,
+    });
+
+    const refreshedBundle = structuredClone(originalBundle);
+    refreshedBundle.cloudVersion += 1;
+    const refreshedNotes = refreshedBundle.files.find((file) => file.fileName === "notes.json")?.json;
+    const refreshedNote = Array.isArray(refreshedNotes) ? refreshedNotes.find((note) => note.id === "note-tawakkul") : null;
+    if (refreshedNote) refreshedNote.title = "Latest Drive title";
+    const refreshedBase = {
+      schemaVersion: 1,
+      accountId: accountA,
+      revision: await revision.computeBundleRevision(refreshedBundle),
+      bundle: structuredClone(refreshedBundle),
+    };
+
+    const result = await store.applyMetadataRestorePreservingLocalChangesAtomically(refreshedBundle, refreshedBase);
+    const restoredBundle = await store.loadMetadataRestoreBundle();
+    const retainedBase = await store.loadLocalSyncBase();
+    const restoredNotes = restoredBundle?.files.find((file) => file.fileName === "notes.json")?.json;
+    const retainedBaseNotes = retainedBase?.bundle.files.find((file) => file.fileName === "notes.json")?.json;
+    const visibleNotes = await fetch("/api/notes").then((response) => response.json());
+    return {
+      result,
+      restoredTitle: Array.isArray(restoredNotes) ? restoredNotes.find((note) => note.id === "note-tawakkul")?.title : null,
+      retainedBaseTitle: Array.isArray(retainedBaseNotes) ? retainedBaseNotes.find((note) => note.id === "note-tawakkul")?.title : null,
+      localNoteRetained: (await store.loadLocalCreatedNotes()).some((note) => note.id === "pending-browser-note"),
+      pendingOperationRetained: (await store.loadPendingLocalSyncOperations()).some((operation) => operation.entityId === "pending-browser-note"),
+      localNoteVisible: Array.isArray(visibleNotes) && visibleNotes.some((note) => note.id === "pending-browser-note"),
+      refreshedDriveNoteVisible: Array.isArray(visibleNotes) && visibleNotes.some((note) => note.id === "note-tawakkul" && note.title === "Latest Drive title"),
+    };
+  }, { accountA, bundleA });
+  assert.deepEqual(preservingRestore.result, { preservedLocalChanges: true, preservedExistingBase: true });
+  assert.equal(preservingRestore.restoredTitle, "Latest Drive title", "Restore must refresh the verified Drive metadata.");
+  assert.equal(preservingRestore.retainedBaseTitle, "التوكل - Tawakkul", "Pending edits must retain their original three-way merge ancestor.");
+  assert.equal(preservingRestore.localNoteRetained, true, "Restore must not erase a local browser note.");
+  assert.equal(preservingRestore.pendingOperationRetained, true, "Restore must keep the browser note pending for safe backup.");
+  assert.equal(preservingRestore.localNoteVisible, true, "The preserved local note must remain visible after restore.");
+  assert.equal(preservingRestore.refreshedDriveNoteVisible, true, "The refreshed Drive corpus must be visible alongside local changes.");
+
+  const cleanRestore = await firstPage.evaluate(async ({ accountA, bundleA }) => {
+    const account = await import("/src/lib/sync/accountContext.ts");
+    const store = await import("/src/lib/restore/localRestoreStore.ts");
+    const revision = await import("/src/lib/sync/revision.ts");
+    account.setActiveGoogleAccount(accountA);
+    await store.clearLocalWorkspaceData();
+    const refreshedBundle = structuredClone(bundleA);
+    refreshedBundle.cloudVersion += 2;
+    const refreshedBase = {
+      schemaVersion: 1,
+      accountId: accountA,
+      revision: await revision.computeBundleRevision(refreshedBundle),
+      bundle: structuredClone(refreshedBundle),
+    };
+    const result = await store.applyMetadataRestorePreservingLocalChangesAtomically(refreshedBundle, refreshedBase);
+    return {
+      result,
+      baseCloudVersion: (await store.loadLocalSyncBase())?.bundle.cloudVersion,
+    };
+  }, { accountA, bundleA });
+  assert.deepEqual(cleanRestore.result, { preservedLocalChanges: false, preservedExistingBase: false });
+  assert.equal(cleanRestore.baseCloudVersion, bundleA.cloudVersion + 2, "A clean restore must advance the sync base.");
+
   await Promise.all([firstPage, secondPage].map((page) => page.evaluate(async (accountId) => {
     const account = await import("/src/lib/sync/accountContext.ts");
     account.setActiveGoogleAccount(accountId);

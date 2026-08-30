@@ -266,7 +266,7 @@ export function GoogleDrivePanel() {
           <AlertDialogHeader>
             <AlertDialogTitle>Restore from {verifiedAccountLabel}?</AlertDialogTitle>
             <AlertDialogDescription>
-              MyVault verified this Google account before reading its backup. The restored workspace in this browser will be replaced with this account&apos;s latest Android backup. Nothing in Google Drive will be changed.
+              MyVault verified this Google account before reading its backup. The verified Drive baseline in this browser will be refreshed, while any unsynchronised website changes remain safely stored for the next backup. Nothing in Google Drive will be changed.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

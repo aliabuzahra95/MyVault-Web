@@ -29,6 +29,18 @@ const RECOVERY_SNAPSHOT_STORE = "recovery-snapshots";
 const SYNC_LOG_STORE = "sync-log";
 const ACCOUNT_META_STORE = "account-meta";
 const CURRENT_METADATA_KEY = "current";
+const PENDING_LOCAL_CHANGE_STORES = [
+  NOTE_DRAFT_STORE,
+  CREATED_FOLDER_STORE,
+  CREATED_NOTE_STORE,
+  CREATED_ATTACHMENT_STORE,
+  PDF_READER_STATE_STORE,
+  PDF_ANNOTATION_CHANGE_STORE,
+  CREATED_COURSE_STORE,
+  CREATED_COURSE_FOLDER_STORE,
+  CREATED_COURSE_STICKY_STORE,
+  CREATED_COURSE_CONCEPT_STORE,
+] as const;
 export const LOCAL_COURSE_CHANGE_EVENT = "myvault-local-course-changed";
 export const LOCAL_CONTENT_CHANGE_EVENT = "myvault-local-content-changed";
 const LEGACY_DEMO_NOTE = {
@@ -418,16 +430,7 @@ export function loadPendingLocalSyncOperations() {
 export async function hasPendingLocalChanges() {
   const [operations, ...legacyPending] = await Promise.all([
     loadPendingLocalSyncOperations(),
-    getAllForAccount(NOTE_DRAFT_STORE),
-    getAllForAccount(CREATED_FOLDER_STORE),
-    getAllForAccount(CREATED_NOTE_STORE),
-    getAllForAccount(CREATED_ATTACHMENT_STORE),
-    getAllForAccount(PDF_READER_STATE_STORE),
-    getAllForAccount(PDF_ANNOTATION_CHANGE_STORE),
-    getAllForAccount(CREATED_COURSE_STORE),
-    getAllForAccount(CREATED_COURSE_FOLDER_STORE),
-    getAllForAccount(CREATED_COURSE_STICKY_STORE),
-    getAllForAccount(CREATED_COURSE_CONCEPT_STORE),
+    ...PENDING_LOCAL_CHANGE_STORES.map((storeName) => getAllForAccount(storeName)),
   ]);
   return operations.length > 0 || legacyPending.some((records) => records.length > 0);
 }
@@ -451,6 +454,70 @@ export function applyMetadataRestoreAtomically(bundle: MetadataRestoreBundle, ba
         database.close();
         if (typeof window !== "undefined") window.dispatchEvent(new Event("myvault-restored-corpus-changed"));
         resolve();
+      };
+      transaction.onerror = () => {
+        const error = transaction.error ?? new Error("The validated restore could not be applied. The previous local vault was preserved.");
+        database.close();
+        reject(error);
+      };
+      transaction.onabort = () => {
+        const error = transaction.error ?? new Error("The validated restore was cancelled. The previous local vault was preserved.");
+        database.close();
+        reject(error);
+      };
+    }).catch(reject);
+  });
+}
+
+export type PreservingMetadataRestoreResult = {
+  preservedLocalChanges: boolean;
+  preservedExistingBase: boolean;
+};
+
+export function applyMetadataRestorePreservingLocalChangesAtomically(
+  bundle: MetadataRestoreBundle,
+  nextBase: LocalSyncBase,
+) {
+  const accountId = getActiveAccountId();
+  const stores = [METADATA_STORE, SYNC_BASE_STORE, SYNC_JOURNAL_STORE, ...PENDING_LOCAL_CHANGE_STORES];
+
+  return new Promise<PreservingMetadataRestoreResult>((resolve, reject) => {
+    void openRestoreDatabase().then((database) => {
+      const transaction = database.transaction(stores, "readwrite");
+      const range = accountStorageRange(accountId);
+      const journalRequest = transaction.objectStore(SYNC_JOURNAL_STORE).getAll(range) as IDBRequest<LocalSyncOperation[]>;
+      const baseRequest = transaction.objectStore(SYNC_BASE_STORE).get(accountStorageKey("base", accountId)) as IDBRequest<LocalSyncBase | undefined>;
+      const overlayRequests = PENDING_LOCAL_CHANGE_STORES.map(
+        (storeName) => transaction.objectStore(storeName).count(range),
+      );
+      const readRequests: IDBRequest[] = [journalRequest, baseRequest, ...overlayRequests];
+      let remainingReads = readRequests.length;
+      let result: PreservingMetadataRestoreResult | null = null;
+
+      const applyRestore = () => {
+        remainingReads -= 1;
+        if (remainingReads > 0) return;
+
+        const hasPendingJournalOperation = journalRequest.result.some((operation) => operation.status === "pending");
+        const hasPendingOverlay = overlayRequests.some((request) => request.result > 0);
+        const preservedLocalChanges = hasPendingJournalOperation || hasPendingOverlay;
+        const existingBase = baseRequest.result;
+        const preservedExistingBase = preservedLocalChanges && Boolean(existingBase);
+        const baseToStore = preservedExistingBase ? existingBase : nextBase;
+
+        transaction.objectStore(METADATA_STORE).put(bundle, accountStorageKey(CURRENT_METADATA_KEY, accountId));
+        transaction.objectStore(SYNC_BASE_STORE).put(baseToStore, accountStorageKey("base", accountId));
+        result = { preservedLocalChanges, preservedExistingBase };
+      };
+
+      readRequests.forEach((request) => {
+        request.onsuccess = applyRestore;
+      });
+
+      transaction.oncomplete = () => {
+        database.close();
+        if (typeof window !== "undefined") window.dispatchEvent(new Event("myvault-restored-corpus-changed"));
+        resolve(result ?? { preservedLocalChanges: false, preservedExistingBase: false });
       };
       transaction.onerror = () => {
         const error = transaction.error ?? new Error("The validated restore could not be applied. The previous local vault was preserved.");
