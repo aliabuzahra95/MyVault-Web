@@ -486,11 +486,10 @@ export function applyMetadataRestorePreservingLocalChangesAtomically(
       const transaction = database.transaction(stores, "readwrite");
       const range = accountStorageRange(accountId);
       const journalRequest = transaction.objectStore(SYNC_JOURNAL_STORE).getAll(range) as IDBRequest<LocalSyncOperation[]>;
-      const baseRequest = transaction.objectStore(SYNC_BASE_STORE).get(accountStorageKey("base", accountId)) as IDBRequest<LocalSyncBase | undefined>;
       const overlayRequests = PENDING_LOCAL_CHANGE_STORES.map(
         (storeName) => transaction.objectStore(storeName).count(range),
       );
-      const readRequests: IDBRequest[] = [journalRequest, baseRequest, ...overlayRequests];
+      const readRequests: IDBRequest[] = [journalRequest, ...overlayRequests];
       let remainingReads = readRequests.length;
       let result: PreservingMetadataRestoreResult | null = null;
 
@@ -501,12 +500,10 @@ export function applyMetadataRestorePreservingLocalChangesAtomically(
         const hasPendingJournalOperation = journalRequest.result.some((operation) => operation.status === "pending");
         const hasPendingOverlay = overlayRequests.some((request) => request.result > 0);
         const preservedLocalChanges = hasPendingJournalOperation || hasPendingOverlay;
-        const existingBase = baseRequest.result;
-        const preservedExistingBase = preservedLocalChanges && Boolean(existingBase);
-        const baseToStore = preservedExistingBase ? existingBase : nextBase;
+        const preservedExistingBase = false;
 
         transaction.objectStore(METADATA_STORE).put(bundle, accountStorageKey(CURRENT_METADATA_KEY, accountId));
-        transaction.objectStore(SYNC_BASE_STORE).put(baseToStore, accountStorageKey("base", accountId));
+        transaction.objectStore(SYNC_BASE_STORE).put(nextBase, accountStorageKey("base", accountId));
         result = { preservedLocalChanges, preservedExistingBase };
       };
 

@@ -141,9 +141,9 @@ try {
       refreshedDriveNoteVisible: Array.isArray(visibleNotes) && visibleNotes.some((note) => note.id === "note-tawakkul" && note.title === "Latest Drive title"),
     };
   }, { accountA, bundleA });
-  assert.deepEqual(preservingRestore.result, { preservedLocalChanges: true, preservedExistingBase: true });
+  assert.deepEqual(preservingRestore.result, { preservedLocalChanges: true, preservedExistingBase: false });
   assert.equal(preservingRestore.restoredTitle, "Latest Drive title", "Restore must refresh the verified Drive metadata.");
-  assert.equal(preservingRestore.retainedBaseTitle, "التوكل - Tawakkul", "Pending edits must retain their original three-way merge ancestor.");
+  assert.equal(preservingRestore.retainedBaseTitle, "Latest Drive title", "A successful restore must become the merge baseline for retained website changes.");
   assert.equal(preservingRestore.localNoteRetained, true, "Restore must not erase a local browser note.");
   assert.equal(preservingRestore.pendingOperationRetained, true, "Restore must keep the browser note pending for safe backup.");
   assert.equal(preservingRestore.localNoteVisible, true, "The preserved local note must remain visible after restore.");
@@ -500,8 +500,10 @@ try {
     const revision = await import("/src/lib/sync/revision.ts");
     const bundle = await store.loadMetadataRestoreBundle();
     const notes = bundle?.files.find((file) => file.fileName === "notes.json")?.json;
+    const folders = bundle?.files.find((file) => file.fileName === "folders.json")?.json;
     const existing = Array.isArray(notes) ? notes.find((note) => note.id === "web-first-note") : null;
-    if (!bundle || !existing) throw new Error("The first backup did not become the local sync base.");
+    const existingFolder = Array.isArray(folders) ? folders.find((folder) => folder.id === "web-first-folder") : null;
+    if (!bundle || !existing || !existingFolder) throw new Error("The first backup did not become the local sync base.");
     const retainedOlderBase = structuredClone(bundle);
     retainedOlderBase.cloudVersion = Math.max(0, bundle.cloudVersion - 1);
     retainedOlderBase.files = retainedOlderBase.files.map((file) => {
@@ -511,6 +513,14 @@ try {
       if (file.fileName === "blocks.json" && Array.isArray(file.json)) {
         return { ...file, json: file.json.filter((block) => block.noteId !== "web-first-note") };
       }
+      if (file.fileName === "folders.json" && Array.isArray(file.json)) {
+        return {
+          ...file,
+          json: file.json.map((folder) => folder.id === "web-first-folder"
+            ? { ...folder, name: "Older baseline folder title", updatedAt: 100 }
+            : folder),
+        };
+      }
       return file;
     });
     await store.saveLocalSyncBase({
@@ -518,6 +528,31 @@ try {
       accountId,
       revision: await revision.computeBundleRevision(retainedOlderBase),
       bundle: retainedOlderBase,
+    });
+    await store.saveLocalCreatedFolder({
+      id: "web-first-folder",
+      parentId: null,
+      title: "Existing folder renamed after restore",
+      description: null,
+      mode: "study",
+      orderIndex: 0,
+      createdAt: existingFolder.createdAt,
+      updatedAt: 440,
+    });
+    await store.saveLocalCreatedNote({
+      id: "new-note-after-restore",
+      folderId: "web-first-folder",
+      parentNoteId: null,
+      title: "New note created after restore",
+      bodyPreview: "This note is added in the same backup as existing edits.",
+      wordCount: 10,
+      characterCount: 57,
+      isPinned: false,
+      isFolderPinned: false,
+      orderIndex: 1,
+      tagNames: [],
+      createdAt: 445,
+      updatedAt: 445,
     });
     await store.saveLocalNoteDraft({
       schemaVersion: 1,
@@ -548,10 +583,15 @@ try {
   const editedManifest = JSON.parse(editedManifestFile.bytes.toString("utf8"));
   const editedNotesEntry = editedManifest.entries.find((entry) => entry.fileName === "notes.json");
   const editedBlocksEntry = editedManifest.entries.find((entry) => entry.fileName === "blocks.json");
+  const editedFoldersEntry = editedManifest.entries.find((entry) => entry.fileName === "folders.json");
   const editedNotes = JSON.parse(driveFiles.get(editedNotesEntry.cloudFileId).bytes.toString("utf8"));
   const editedBlocks = JSON.parse(driveFiles.get(editedBlocksEntry.cloudFileId).bytes.toString("utf8"));
+  const editedFolders = JSON.parse(driveFiles.get(editedFoldersEntry.cloudFileId).bytes.toString("utf8"));
   assert.equal(editedNotes.find((note) => note.id === "web-first-note")?.title, "Existing note edited on Web");
+  assert.equal(editedNotes.find((note) => note.id === "new-note-after-restore")?.title, "New note created after restore");
   assert.equal(JSON.parse(editedBlocks.find((block) => block.noteId === "web-first-note" && block.type === "rich_text")?.content).text, "An existing note now has an updated body.");
+  assert.equal(JSON.parse(editedBlocks.find((block) => block.noteId === "new-note-after-restore" && block.type === "rich_text")?.content).text, "This note is added in the same backup as existing edits.");
+  assert.equal(editedFolders.find((folder) => folder.id === "web-first-folder")?.name, "Existing folder renamed after restore");
 
   driveFiles.clear();
   uploadOrder.length = 0;
