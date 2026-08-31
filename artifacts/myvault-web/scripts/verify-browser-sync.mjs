@@ -494,13 +494,31 @@ try {
   const notesFile = driveFiles.get(notesEntry.cloudFileId);
   assert.ok(JSON.parse(notesFile.bytes.toString("utf8")).some((note) => note.id === "web-first-note"));
 
-  const existingNoteCommit = await firstPage.evaluate(async () => {
+  const existingNoteCommit = await firstPage.evaluate(async (accountId) => {
     const store = await import("/src/lib/restore/localRestoreStore.ts");
     const writeBack = await import("/src/lib/sync/driveWriteBack.ts");
+    const revision = await import("/src/lib/sync/revision.ts");
     const bundle = await store.loadMetadataRestoreBundle();
     const notes = bundle?.files.find((file) => file.fileName === "notes.json")?.json;
     const existing = Array.isArray(notes) ? notes.find((note) => note.id === "web-first-note") : null;
     if (!bundle || !existing) throw new Error("The first backup did not become the local sync base.");
+    const retainedOlderBase = structuredClone(bundle);
+    retainedOlderBase.cloudVersion = Math.max(0, bundle.cloudVersion - 1);
+    retainedOlderBase.files = retainedOlderBase.files.map((file) => {
+      if (file.fileName === "notes.json" && Array.isArray(file.json)) {
+        return { ...file, json: file.json.filter((note) => note.id !== "web-first-note") };
+      }
+      if (file.fileName === "blocks.json" && Array.isArray(file.json)) {
+        return { ...file, json: file.json.filter((block) => block.noteId !== "web-first-note") };
+      }
+      return file;
+    });
+    await store.saveLocalSyncBase({
+      schemaVersion: 1,
+      accountId,
+      revision: await revision.computeBundleRevision(retainedOlderBase),
+      bundle: retainedOlderBase,
+    });
     await store.saveLocalNoteDraft({
       schemaVersion: 1,
       noteId: "web-first-note",
@@ -523,7 +541,7 @@ try {
       result,
       pendingOperations: (await store.loadPendingLocalSyncOperations()).length,
     };
-  });
+  }, driveCommit.base.accountId);
   assert.equal(existingNoteCommit.result.status, "uploaded", "An edit to a note already present on Web and Android must upload.");
   assert.equal(existingNoteCommit.pendingOperations, 0);
   const editedManifestFile = [...driveFiles.values()].filter((file) => file.name === "sync_manifest.json").toSorted((a, b) => b.modifiedTime.localeCompare(a.modifiedTime))[0];

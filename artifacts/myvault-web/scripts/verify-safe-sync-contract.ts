@@ -170,6 +170,15 @@ const unsafeExistingEdit = buildSyncPreflight(unknownFutureRichText, {
 assert.equal(unsafeExistingEdit.status, "blocked");
 assert.ok(unsafeExistingEdit.blockers.some((message) => message.includes("cannot safely round-trip")));
 
+const remotelyChangedExistingNote = structuredClone(base);
+replaceRow(remotelyChangedExistingNote, "notes.json", "note-tawakkul", { updatedAt: 999 });
+const staleExistingEdit = buildSyncPreflight(remotelyChangedExistingNote, {
+  ...emptyPending(),
+  noteDrafts: [existingRichTextDraft],
+});
+assert.equal(staleExistingEdit.status, "blocked");
+assert.ok(staleExistingEdit.blockers.some((message) => message.includes("changed in the restored backup")));
+
 const web = structuredClone(base);
 const remote = structuredClone(base);
 replaceRow(web, "notes.json", "note-tawakkul", { title: "التوكل - Edited on Web", updatedAt: 200 });

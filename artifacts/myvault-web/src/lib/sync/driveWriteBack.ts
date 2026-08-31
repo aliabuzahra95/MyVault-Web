@@ -32,7 +32,12 @@ import { assertGoogleDriveSession, verifyAndActivateGoogleDriveSession } from "@
 import { withAccountSyncLock } from "@/lib/sync/accountContext";
 import { getCachedGoogleDriveToken } from "@/lib/googleDrive/identity";
 import { canonicalJson, computeBundleRevision, computeManifestRevision } from "@/lib/sync/revision";
-import { buildSyncPreflight, createInitialMetadataRestoreBundle, loadSyncPendingChanges } from "@/lib/sync/syncPreflight";
+import {
+  buildSyncPreflight,
+  createInitialMetadataRestoreBundle,
+  loadSyncPendingChanges,
+  type SyncPendingChanges,
+} from "@/lib/sync/syncPreflight";
 import { reconcileMetadataBundles } from "@/lib/sync/threeWayMerge";
 import { validateSyncCandidate } from "@/lib/sync/validateSyncCandidate";
 
@@ -191,6 +196,41 @@ function withPreparedFiles(bundle: MetadataRestoreBundle, preparedFiles: Record<
   return { ...bundle, files };
 }
 
+function withCurrentNoteBaselines(
+  base: MetadataRestoreBundle,
+  restored: MetadataRestoreBundle,
+  noteDrafts: SyncPendingChanges["noteDrafts"],
+) {
+  const noteIds = new Set(noteDrafts
+    .filter((draft) => draft.baseCloudVersion === restored.cloudVersion && draft.baseCloudVersion !== base.cloudVersion)
+    .map((draft) => draft.noteId));
+  if (noteIds.size === 0) return base;
+
+  const restoredFiles = new Map(restored.files.map((file) => [file.fileName, file]));
+  const replaceRows = (fileName: "notes.json" | "blocks.json", identityKey: "id" | "noteId") => {
+    const baseFile = base.files.find((file) => file.fileName === fileName);
+    const restoredFile = restoredFiles.get(fileName);
+    if (!baseFile || !Array.isArray(baseFile.json) || !restoredFile || !Array.isArray(restoredFile.json)) return baseFile;
+    const retained = baseFile.json.filter((row) => (
+      typeof row !== "object" || row === null || Array.isArray(row) || !noteIds.has(String(row[identityKey] ?? ""))
+    ));
+    const current = restoredFile.json.filter((row) => (
+      typeof row === "object" && row !== null && !Array.isArray(row) && noteIds.has(String(row[identityKey] ?? ""))
+    ));
+    const json = [...retained, ...current];
+    return { ...baseFile, json, itemCount: json.length };
+  };
+
+  return {
+    ...base,
+    files: base.files.map((file) => {
+      if (file.fileName === "notes.json") return replaceRows("notes.json", "id") ?? file;
+      if (file.fileName === "blocks.json") return replaceRows("blocks.json", "noteId") ?? file;
+      return file;
+    }),
+  };
+}
+
 function changedMetadataFiles(candidate: MetadataRestoreBundle, remote: MetadataRestoreBundle | null) {
   const remoteJson = new Map(remote?.files.map((file) => [file.fileName, canonicalJson(file.json)]) ?? []);
   return candidate.files
@@ -233,7 +273,7 @@ export async function writeWebsiteChangesToDrive({ accessToken, onProgress }: {
       loadLocalSyncBase(),
     ]);
     const operationIds = capturedOperations.map((operation) => operation.id);
-    const sourceBundle = isInitialBackup ? createInitialMetadataRestoreBundle() : base?.bundle;
+    const sourceBundle = isInitialBackup ? createInitialMetadataRestoreBundle() : restoredBundle;
     if (!sourceBundle || (!isInitialBackup && (!base || base.accountId !== accountId))) {
       throw new Error("The immutable restore base is missing for this Google account. Restore the latest Android metadata before backing up website changes.");
     }
@@ -266,7 +306,10 @@ export async function writeWebsiteChangesToDrive({ accessToken, onProgress }: {
     const touchedFiles = new Set(preflight.touchedFiles.map((file) => file.fileName));
     let candidate = webCandidate;
     if (currentBundle && base) {
-      const merge = reconcileMetadataBundles({ base: base.bundle, web: webCandidate, remote: currentBundle, touchedFiles });
+      const mergeBase = restoredBundle
+        ? withCurrentNoteBaselines(base.bundle, restoredBundle, pending.noteDrafts)
+        : base.bundle;
+      const merge = reconcileMetadataBundles({ base: mergeBase, web: webCandidate, remote: currentBundle, touchedFiles });
       if (merge.conflicts.length) {
         const remoteRevision = await computeBundleRevision(currentBundle);
         await Promise.all(merge.conflicts.map((conflict) => saveLocalSyncConflict({
