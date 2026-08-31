@@ -182,6 +182,7 @@ const ANDROID_BODY_BLOCK_TYPES = new Set([
   "link",
   "divider",
 ]);
+const ANDROID_NON_BODY_BLOCK_TYPES = new Set(["attachment", "image"]);
 
 function richTextDocument(draft: LocalNoteDraft) {
   return draft.richTextDocument ?? blocksToVaultRichText(draft.blocks);
@@ -455,15 +456,27 @@ export function buildSyncPreflight(bundle: MetadataRestoreBundle | null, pending
       const bodyRows = originalBlocks.filter((row) => (
         stringValue(row, "noteId") === draft.noteId && ANDROID_BODY_BLOCK_TYPES.has(stringValue(row, "type"))
       ));
-      const originalBody = bodyRows.length === 1 && stringValue(bodyRows[0], "type") === "rich_text" ? bodyRows[0] : null;
+      const richTextRows = bodyRows.filter((row) => stringValue(row, "type") === "rich_text");
+      const originalBody = richTextRows.length === 1 ? richTextRows[0] : null;
       const envelope = originalBody && typeof originalBody.content === "string"
         ? inspectVaultRichTextEnvelope(originalBody.content)
         : null;
-      if (!originalBody || !envelope) {
+      if (richTextRows.length > 0 && (!originalBody || !envelope)) {
         blockers.push(`“${draft.title}” uses Android formatting that MyVault Web cannot safely round-trip yet. Its original content has been preserved.`);
         return [];
       }
-      restoredRichTextByNoteId.set(draft.noteId, { row: originalBody, envelope });
+      if (originalBody && envelope) {
+        restoredRichTextByNoteId.set(draft.noteId, { row: originalBody, envelope });
+      } else if (bodyRows.length > 0) {
+        warnings.push(`“${draft.title}” will be upgraded from legacy Android body blocks to the current rich-text format, matching an edit made in the Android app.`);
+      } else {
+        const noteBlocks = originalBlocks.filter((row) => stringValue(row, "noteId") === draft.noteId);
+        const unrecognisedBlocks = noteBlocks.filter((row) => !ANDROID_NON_BODY_BLOCK_TYPES.has(stringValue(row, "type")));
+        if (unrecognisedBlocks.length > 0) {
+          blockers.push(`“${draft.title}” contains an unrecognised Android body format. Its original content has been preserved.`);
+          return [];
+        }
+      }
     }
     validDrafts.push(draft);
     const document = richTextDocument(draft);

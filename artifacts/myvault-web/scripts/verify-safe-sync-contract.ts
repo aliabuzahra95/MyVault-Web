@@ -39,6 +39,15 @@ function removeRow(bundle: MetadataRestoreBundle, fileName: string, id: string) 
   target.splice(index, 1);
 }
 
+function withPreparedFiles(bundle: MetadataRestoreBundle, preparedFiles: Record<string, JsonRow[]>) {
+  return {
+    ...bundle,
+    files: bundle.files.map((file) => preparedFiles[file.fileName]
+      ? { ...file, json: preparedFiles[file.fileName], itemCount: preparedFiles[file.fileName].length }
+      : file),
+  };
+}
+
 function emptyPending(): SyncPendingChanges {
   return {
     noteDrafts: [],
@@ -86,6 +95,80 @@ assert.equal(inspectVaultRichTextEnvelope(JSON.stringify({
   styleMarks: [{ start: 0, end: 6, style: "Bold", futureMember: true }],
   noteLinks: [],
 })), null, "Unknown style-mark members must block write-back.");
+
+const existingRichTextDraft: SyncPendingChanges["noteDrafts"][number] = {
+    schemaVersion: 1,
+    noteId: "note-tawakkul",
+    baseCloudVersion: base.cloudVersion,
+    baseUpdatedAt: 100,
+    title: "التوكل - Edited on Web",
+    mode: "rich_text",
+    richTextDocument: {
+      text: "التوكل على الله\nEdited safely on Web.",
+      styleMarks: [{ start: 0, end: 15, style: "Heading2" }],
+      noteLinks: [],
+    },
+    blocks: [],
+    isPinned: true,
+    savedAt: 200,
+    pendingDriveSync: true,
+};
+const editedExistingRichText = buildSyncPreflight(base, {
+  ...emptyPending(),
+  noteDrafts: [existingRichTextDraft],
+});
+assert.equal(editedExistingRichText.status, "ready", editedExistingRichText.blockers.join("\n"));
+const editedRichTextCandidate = withPreparedFiles(base, editedExistingRichText.preparedFiles);
+assert.equal(row(editedRichTextCandidate, "notes.json", "note-tawakkul").title, "التوكل - Edited on Web");
+const editedRichTextBlock = row(editedRichTextCandidate, "blocks.json", "block-rich");
+assert.deepEqual(editedRichTextBlock.androidBlockField, { preserve: true }, "An edited current rich-text block must preserve Android row fields.");
+assert.deepEqual(JSON.parse(String(editedRichTextBlock.content)).futureEnvelopeField, { preserve: true }, "An edited current rich-text block must preserve Android envelope fields.");
+assert.deepEqual(validateSyncCandidate(editedRichTextCandidate), { valid: true, issues: [] });
+
+const existingLegacyDraft: SyncPendingChanges["noteDrafts"][number] = {
+    schemaVersion: 1,
+    noteId: "note-hadith",
+    baseCloudVersion: base.cloudVersion,
+    baseUpdatedAt: 100,
+    title: "Hadith edited safely on Web",
+    mode: "rich_text",
+    richTextDocument: {
+      text: "Tie it, trust Allah, and preserve the edit.",
+      styleMarks: [{ start: 0, end: 6, style: "Bold" }],
+      noteLinks: [],
+    },
+    blocks: [],
+    isPinned: false,
+    savedAt: 210,
+    pendingDriveSync: true,
+};
+const editedExistingLegacyNote = buildSyncPreflight(base, {
+  ...emptyPending(),
+  noteDrafts: [existingLegacyDraft],
+});
+assert.equal(editedExistingLegacyNote.status, "ready", editedExistingLegacyNote.blockers.join("\n"));
+assert.ok(editedExistingLegacyNote.warnings.some((message) => message.includes("legacy Android body blocks")));
+const editedLegacyCandidate = withPreparedFiles(base, editedExistingLegacyNote.preparedFiles);
+assert.equal(rows(editedLegacyCandidate, "blocks.json").some((item) => item.id === "block-hadith"), false, "The legacy paragraph must be replaced after an intentional edit.");
+const migratedLegacyBlock = row(editedLegacyCandidate, "blocks.json", "note-hadith-rich-text");
+assert.equal(migratedLegacyBlock.type, "rich_text");
+assert.equal(JSON.parse(String(migratedLegacyBlock.content)).text, "Tie it, trust Allah, and preserve the edit.");
+assert.deepEqual(validateSyncCandidate(editedLegacyCandidate), { valid: true, issues: [] });
+
+const unknownFutureRichText = structuredClone(base);
+replaceRow(unknownFutureRichText, "blocks.json", "block-rich", {
+  content: JSON.stringify({
+    text: "Future formatting",
+    styleMarks: [{ start: 0, end: 6, style: "FutureAndroidStyle" }],
+    noteLinks: [],
+  }),
+});
+const unsafeExistingEdit = buildSyncPreflight(unknownFutureRichText, {
+  ...emptyPending(),
+  noteDrafts: [existingRichTextDraft],
+});
+assert.equal(unsafeExistingEdit.status, "blocked");
+assert.ok(unsafeExistingEdit.blockers.some((message) => message.includes("cannot safely round-trip")));
 
 const web = structuredClone(base);
 const remote = structuredClone(base);

@@ -348,6 +348,19 @@ try {
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(publicRecord(file)) });
       return;
     }
+    const uploadFileId = path.match(/^\/upload\/drive\/v3\/files\/([^/]+)$/)?.[1];
+    if (uploadFileId && request.method() === "PATCH") {
+      const file = driveFiles.get(decodeURIComponent(uploadFileId));
+      if (!file) {
+        await route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ error: "not found" }) });
+        return;
+      }
+      file.bytes = request.postDataBuffer() ?? Buffer.alloc(0);
+      file.modifiedTime = new Date(1_780_000_000_000 + ++driveSequence).toISOString();
+      uploadOrder.push(file.name);
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(publicRecord(file)) });
+      return;
+    }
     const fileId = path.match(/^\/drive\/v3\/files\/([^/]+)$/)?.[1];
     if (fileId && request.method() === "GET" && url.searchParams.get("alt") === "media") {
       const file = driveFiles.get(decodeURIComponent(fileId));
@@ -480,6 +493,47 @@ try {
   const notesEntry = committedManifest.entries.find((entry) => entry.fileName === "notes.json");
   const notesFile = driveFiles.get(notesEntry.cloudFileId);
   assert.ok(JSON.parse(notesFile.bytes.toString("utf8")).some((note) => note.id === "web-first-note"));
+
+  const existingNoteCommit = await firstPage.evaluate(async () => {
+    const store = await import("/src/lib/restore/localRestoreStore.ts");
+    const writeBack = await import("/src/lib/sync/driveWriteBack.ts");
+    const bundle = await store.loadMetadataRestoreBundle();
+    const notes = bundle?.files.find((file) => file.fileName === "notes.json")?.json;
+    const existing = Array.isArray(notes) ? notes.find((note) => note.id === "web-first-note") : null;
+    if (!bundle || !existing) throw new Error("The first backup did not become the local sync base.");
+    await store.saveLocalNoteDraft({
+      schemaVersion: 1,
+      noteId: "web-first-note",
+      baseCloudVersion: bundle.cloudVersion,
+      baseUpdatedAt: existing.updatedAt,
+      title: "Existing note edited on Web",
+      mode: "rich_text",
+      richTextDocument: {
+        text: "An existing note now has an updated body.",
+        styleMarks: [{ start: 3, end: 11, style: "Bold" }],
+        noteLinks: [],
+      },
+      blocks: [],
+      isPinned: false,
+      savedAt: 450,
+      pendingDriveSync: true,
+    });
+    const result = await writeBack.writeWebsiteChangesToDrive({ accessToken: "mock-token" });
+    return {
+      result,
+      pendingOperations: (await store.loadPendingLocalSyncOperations()).length,
+    };
+  });
+  assert.equal(existingNoteCommit.result.status, "uploaded", "An edit to a note already present on Web and Android must upload.");
+  assert.equal(existingNoteCommit.pendingOperations, 0);
+  const editedManifestFile = [...driveFiles.values()].filter((file) => file.name === "sync_manifest.json").toSorted((a, b) => b.modifiedTime.localeCompare(a.modifiedTime))[0];
+  const editedManifest = JSON.parse(editedManifestFile.bytes.toString("utf8"));
+  const editedNotesEntry = editedManifest.entries.find((entry) => entry.fileName === "notes.json");
+  const editedBlocksEntry = editedManifest.entries.find((entry) => entry.fileName === "blocks.json");
+  const editedNotes = JSON.parse(driveFiles.get(editedNotesEntry.cloudFileId).bytes.toString("utf8"));
+  const editedBlocks = JSON.parse(driveFiles.get(editedBlocksEntry.cloudFileId).bytes.toString("utf8"));
+  assert.equal(editedNotes.find((note) => note.id === "web-first-note")?.title, "Existing note edited on Web");
+  assert.equal(JSON.parse(editedBlocks.find((block) => block.noteId === "web-first-note" && block.type === "rich_text")?.content).text, "An existing note now has an updated body.");
 
   driveFiles.clear();
   uploadOrder.length = 0;
