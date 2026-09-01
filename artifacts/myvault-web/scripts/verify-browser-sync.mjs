@@ -570,7 +570,7 @@ try {
       },
       blocks: [],
       isPinned: false,
-      savedAt: Date.parse(bundle.restoredAt) + 1_000,
+      savedAt: Date.parse(bundle.restoredAt) - 1_000,
       pendingDriveSync: true,
     });
     const result = await writeBack.writeWebsiteChangesToDrive({ accessToken: "mock-token" });

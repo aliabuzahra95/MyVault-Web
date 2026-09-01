@@ -630,7 +630,6 @@ export async function reconcileLocalNoteDrafts(bundle: MetadataRestoreBundle) {
   const [drafts, createdNotes] = await Promise.all([loadLocalNoteDrafts(), loadLocalCreatedNotes()]);
   const createdNoteIds = new Set(createdNotes.map((note) => note.id));
   const restoredNotes = new Map(restoredNoteRows(bundle).map((note) => [typeof note.id === "string" ? note.id : "", note]));
-  const restoredAt = Date.parse(bundle.restoredAt);
   let rebased = 0;
   let removedDemoDrafts = 0;
   let conflicts = 0;
@@ -648,8 +647,7 @@ export async function reconcileLocalNoteDrafts(bundle: MetadataRestoreBundle) {
     const alreadyCurrent = draft.baseCloudVersion === bundle.cloudVersion && restoredUpdatedAt === draft.baseUpdatedAt;
     if (alreadyCurrent) continue;
 
-    const editedAfterRestore = Number.isFinite(restoredAt) && draft.savedAt >= restoredAt;
-    if (typeof restoredUpdatedAt === "number" && (restoredUpdatedAt === draft.baseUpdatedAt || editedAfterRestore)) {
+    if (typeof restoredUpdatedAt === "number") {
       await putForAccount(NOTE_DRAFT_STORE, draft.noteId, {
         ...draft,
         baseCloudVersion: bundle.cloudVersion,
