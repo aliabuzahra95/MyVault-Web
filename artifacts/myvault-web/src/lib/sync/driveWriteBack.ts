@@ -20,7 +20,6 @@ import {
   loadMetadataRestoreBundle,
   reconcileLocalNoteDrafts,
   saveLocalSyncBase,
-  saveLocalSyncConflict,
   saveMetadataRestoreBundle,
 } from "@/lib/restore/localRestoreStore";
 import {
@@ -33,12 +32,16 @@ import { withAccountSyncLock } from "@/lib/sync/accountContext";
 import { getCachedGoogleDriveToken } from "@/lib/googleDrive/identity";
 import { canonicalJson, computeBundleRevision, computeManifestRevision } from "@/lib/sync/revision";
 import {
+  applyPreparedFiles,
   buildSyncPreflight,
   createInitialMetadataRestoreBundle,
   loadSyncPendingChanges,
+  type SyncPendingChanges,
+  type SyncPreflight,
 } from "@/lib/sync/syncPreflight";
 import { reconcileMetadataBundles } from "@/lib/sync/threeWayMerge";
 import { validateSyncCandidate } from "@/lib/sync/validateSyncCandidate";
+import { applyIncomingDriveBundleSafely } from "@/lib/sync/safePull";
 
 export type DriveWriteBackProgress = {
   phase: "checking" | "preparing" | "uploading" | "committing" | "complete";
@@ -182,19 +185,6 @@ async function downloadMetadataBundle(accessToken: string, manifest: DriveSyncMa
   return bundle;
 }
 
-function withPreparedFiles(bundle: MetadataRestoreBundle, preparedFiles: Record<string, Record<string, unknown>[]>) {
-  const prepared = new Map(Object.entries(preparedFiles));
-  const files = bundle.files.map((file) => prepared.has(file.fileName)
-    ? { ...file, json: prepared.get(file.fileName), itemCount: prepared.get(file.fileName)?.length ?? file.itemCount }
-    : file);
-  const existing = new Set(files.map((file) => file.fileName));
-  prepared.forEach((json, fileName) => {
-    if (existing.has(fileName)) return;
-    files.push({ fileName, entryPath: `metadata/${fileName}`, backupEntry: fileName, cloudFileId: "", size: 0, updatedAt: null, itemCount: json.length, json });
-  });
-  return { ...bundle, files };
-}
-
 function changedMetadataFiles(candidate: MetadataRestoreBundle, remote: MetadataRestoreBundle | null) {
   const remoteJson = new Map(remote?.files.map((file) => [file.fileName, canonicalJson(file.json)]) ?? []);
   return candidate.files
@@ -231,33 +221,17 @@ export async function writeWebsiteChangesToDrive({ accessToken, onProgress }: {
     const restoredBundle = await loadMetadataRestoreBundle();
     const isInitialBackup = !restoredBundle;
     if (restoredBundle) await reconcileLocalNoteDrafts(restoredBundle);
-    const [pending, capturedOperations, base] = await Promise.all([
-      loadSyncPendingChanges(),
-      loadPendingLocalSyncOperations(),
-      loadLocalSyncBase(),
-    ]);
-    const operationIds = capturedOperations.map((operation) => operation.id);
-    const sourceBundle = isInitialBackup ? createInitialMetadataRestoreBundle() : restoredBundle;
-    if (!sourceBundle || (!isInitialBackup && (!base || base.accountId !== accountId))) {
-      throw new Error("The immutable restore base is missing for this Google account. Restore the latest Android metadata before backing up website changes.");
-    }
-    const preflight = buildSyncPreflight(sourceBundle, pending);
-    if (preflight.status === "blocked") throw new Error(preflight.blockers[0] ?? "Website changes are not ready for Google Drive.");
-    if (preflight.status === "no_changes" || preflight.status === "local_only") {
-      return { status: "no_changes", cloudVersion: sourceBundle.cloudVersion, uploadedMetadataFiles: 0, uploadedAttachmentFiles: 0, repairedManifestEntries: 0, localStateUpdated: true };
-    }
-
-    const webCandidate = withPreparedFiles(sourceBundle, preflight.preparedFiles);
-    let scan: MyVaultDriveScan;
-    let currentManifest: DriveSyncManifest;
+    let scan: MyVaultDriveScan | null = null;
+    let currentManifest: DriveSyncManifest | null = null;
     let currentManifestRevisionId: string | null = null;
     let currentBundle: MetadataRestoreBundle | null = null;
+    let reconciledCandidate: MetadataRestoreBundle | null = null;
+    let reconciledOperationIds: string[] | null = null;
+    let reconciledPendingChanges: SyncPendingChanges | null = null;
+    let reconciledPreflight: SyncPreflight | null = null;
     let repairedManifestEntries = 0;
 
-    if (isInitialBackup) {
-      scan = await ensureInitialDriveLayout(accessToken);
-      currentManifest = { schemaVersion: 1, cloudVersion: 0, storage: "google-drive-api", layout: "MyVault/metadata, MyVault/files, MyVault/manifests, MyVault/backups", entries: [] };
-    } else {
+    if (!isInitialBackup) {
       const latest = await loadLatestManifest(accessToken);
       scan = latest.scan;
       currentManifestRevisionId = latest.manifestRevisionId;
@@ -265,30 +239,53 @@ export async function writeWebsiteChangesToDrive({ accessToken, onProgress }: {
       repairedManifestEntries = repaired.repaired;
       currentManifest = { ...latest.manifest, entries: repaired.entries };
       currentBundle = await downloadMetadataBundle(accessToken, currentManifest);
+      await createLocalRecoverySnapshot("before-drive-write-back-safe-pull");
+      const currentBase = {
+        schemaVersion: 1 as const,
+        accountId,
+        revision: await computeBundleRevision(currentBundle),
+        bundle: structuredClone(currentBundle),
+      };
+      const safePull = await applyIncomingDriveBundleSafely(currentBundle, currentBase);
+      reconciledCandidate = safePull.reconciledBundle;
+      reconciledOperationIds = safePull.reconciledOperationIds;
+      reconciledPendingChanges = safePull.reconciledPendingChanges;
+      reconciledPreflight = safePull.reconciledPreflight;
     }
+
+    const [latestPending, latestOperations, base] = await Promise.all([
+      reconciledPendingChanges ? Promise.resolve(null) : loadSyncPendingChanges(),
+      reconciledOperationIds ? Promise.resolve(null) : loadPendingLocalSyncOperations(),
+      loadLocalSyncBase(),
+    ]);
+    const pending = reconciledPendingChanges ?? latestPending;
+    const operationIds = reconciledOperationIds ?? latestOperations?.map((operation) => operation.id) ?? [];
+    if (!pending) throw new Error("Website changes could not be captured safely for backup.");
+    const sourceBundle = isInitialBackup ? createInitialMetadataRestoreBundle() : base?.bundle;
+    if (!sourceBundle || (!isInitialBackup && (!base || base.accountId !== accountId))) {
+      throw new Error("The immutable restore base is missing for this Google account. Restore the latest Android metadata before backing up website changes.");
+    }
+    const preflight = reconciledPreflight ?? buildSyncPreflight(sourceBundle, pending, base?.revision.revisionId);
+    if (preflight.status === "blocked") throw new Error(preflight.blockers[0] ?? "Website changes are not ready for Google Drive.");
+    if (preflight.status === "no_changes" || preflight.status === "local_only") {
+      return { status: "no_changes", cloudVersion: sourceBundle.cloudVersion, uploadedMetadataFiles: 0, uploadedAttachmentFiles: 0, repairedManifestEntries: 0, localStateUpdated: true };
+    }
+
+    if (isInitialBackup) {
+      scan = await ensureInitialDriveLayout(accessToken);
+      currentManifest = { schemaVersion: 1, cloudVersion: 0, storage: "google-drive-api", layout: "MyVault/metadata, MyVault/files, MyVault/manifests, MyVault/backups", entries: [] };
+    }
+    if (!scan || !currentManifest) throw new Error("The current Google Drive generation could not be prepared safely.");
+
+    const webCandidate = reconciledCandidate ?? applyPreparedFiles(sourceBundle, preflight.preparedFiles);
 
     const touchedFiles = new Set(preflight.touchedFiles.map((file) => file.fileName));
     let candidate = webCandidate;
     if (currentBundle && base) {
-      const mergeBase = restoredBundle ?? base.bundle;
+      const mergeBase = base.bundle;
       const merge = reconcileMetadataBundles({ base: mergeBase, web: webCandidate, remote: currentBundle, touchedFiles });
       if (merge.conflicts.length) {
-        const remoteRevision = await computeBundleRevision(currentBundle);
-        await Promise.all(merge.conflicts.map((conflict) => saveLocalSyncConflict({
-          schemaVersion: 1,
-          id: crypto.randomUUID(),
-          accountId,
-          entityType: conflict.entityType,
-          entityId: conflict.entityId,
-          kind: conflict.kind,
-          baseRevisionId: base.revision.revisionId,
-          remoteRevisionId: remoteRevision.revisionId,
-          operationIds,
-          createdAt: new Date().toISOString(),
-          resolvedAt: null,
-          resolution: null,
-        })));
-        throw new DriveWriteConflictError(`Android and MyVault Web both changed ${merge.conflicts[0].entityType} ${merge.conflicts[0].entityId}. Nothing was uploaded; choose which version to keep before trying again.`);
+        throw new DriveWriteConflictError(`MyVault detected a new change after the safe reconciliation step (${merge.conflicts[0].entityType} ${merge.conflicts[0].entityId}). Nothing was uploaded; run Backup again so it can be reconciled from a fresh Drive generation.`);
       }
       candidate = merge.bundle;
     }

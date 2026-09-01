@@ -5,6 +5,7 @@ import { cn } from "@/lib/utils";
 import {
   Cloud,
   Home,
+  Loader2,
   Menu,
   PanelLeftClose,
   PanelLeftOpen,
@@ -77,9 +78,10 @@ function ProfileHeader() {
   );
 }
 
-function SidebarContent({ closeMobile, collapseDesktop }: { closeMobile?: () => void; collapseDesktop?: () => void }) {
+type DriveConnection = ReturnType<typeof useGoogleDriveConnection>;
+
+function SidebarContent({ closeMobile, collapseDesktop, drive }: { closeMobile?: () => void; collapseDesktop?: () => void; drive: DriveConnection }) {
   const googleConfigured = hasGoogleClientId();
-  const drive = useGoogleDriveConnection();
   const driveConnected = Boolean(drive.token && drive.accountId);
   const driveChecking = drive.status === "initializing" || drive.status === "renewing";
   const [searchActive, setSearchActive] = useState(false);
@@ -199,8 +201,20 @@ function SidebarContent({ closeMobile, collapseDesktop }: { closeMobile?: () => 
 }
 
 export default function Layout({ children }: { children: ReactNode }) {
+  const drive = useGoogleDriveConnection();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [desktopCollapsed, setDesktopCollapsed] = useState(() => localStorage.getItem("myvault-sidebar-collapsed") === "true");
+
+  if (drive.status === "initializing" || drive.status === "renewing") {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-background text-foreground" role="status" aria-live="polite">
+        <div className="flex items-center gap-3 text-sm text-muted-foreground">
+          <Loader2 className="h-5 w-5 animate-spin text-primary" />
+          Checking your latest MyVault backup
+        </div>
+      </div>
+    );
+  }
 
   function setSidebarCollapsed(collapsed: boolean) {
     setDesktopCollapsed(collapsed);
@@ -216,7 +230,7 @@ export default function Layout({ children }: { children: ReactNode }) {
         )}
       >
         <div className="flex h-full w-[284px] shrink-0 flex-col">
-          <SidebarContent collapseDesktop={() => setSidebarCollapsed(true)} />
+          <SidebarContent drive={drive} collapseDesktop={() => setSidebarCollapsed(true)} />
         </div>
       </aside>
 
@@ -227,7 +241,7 @@ export default function Layout({ children }: { children: ReactNode }) {
             <button className="absolute right-3 top-3 rounded-md p-2 text-slate-500" onClick={() => setMobileOpen(false)}>
               <X className="h-5 w-5" />
             </button>
-            <SidebarContent closeMobile={() => setMobileOpen(false)} />
+            <SidebarContent drive={drive} closeMobile={() => setMobileOpen(false)} />
           </aside>
         </div>
       )}

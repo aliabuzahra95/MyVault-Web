@@ -12,6 +12,7 @@ import {
   loadLocalCreatedFolders,
   loadLocalCreatedNotes,
   loadLocalNoteDrafts,
+  loadLocalSyncBase,
   loadLocalPdfAnnotationChanges,
   loadLocalPdfReaderStates,
   loadMetadataRestoreBundle,
@@ -81,6 +82,35 @@ export type SyncPreflight = {
   warnings: string[];
   preparedFiles: Record<string, JsonRow[]>;
 };
+
+export function applyPreparedFiles(
+  bundle: MetadataRestoreBundle,
+  preparedFiles: Record<string, JsonRow[]>,
+) {
+  const prepared = new Map(Object.entries(preparedFiles));
+  const files = bundle.files.map((file) => prepared.has(file.fileName)
+    ? {
+        ...file,
+        json: prepared.get(file.fileName),
+        itemCount: prepared.get(file.fileName)?.length ?? file.itemCount,
+      }
+    : file);
+  const existing = new Set(files.map((file) => file.fileName));
+  prepared.forEach((json, fileName) => {
+    if (existing.has(fileName)) return;
+    files.push({
+      fileName,
+      entryPath: `metadata/${fileName}`,
+      backupEntry: fileName,
+      cloudFileId: "",
+      size: 0,
+      updatedAt: null,
+      itemCount: json.length,
+      json,
+    });
+  });
+  return { ...bundle, files };
+}
 
 export function createInitialMetadataRestoreBundle(now = Date.now()): MetadataRestoreBundle {
   const jsonByName = new Map<string, unknown>([
@@ -346,7 +376,11 @@ export async function loadSyncPendingChanges(): Promise<SyncPendingChanges> {
   };
 }
 
-export function buildSyncPreflight(bundle: MetadataRestoreBundle | null, pending: SyncPendingChanges): SyncPreflight {
+export function buildSyncPreflight(
+  bundle: MetadataRestoreBundle | null,
+  pending: SyncPendingChanges,
+  baseRevisionId?: string,
+): SyncPreflight {
   const counts = {
     noteDrafts: pending.noteDrafts.length,
     createdFolders: pending.createdFolders.length,
@@ -449,6 +483,14 @@ export function buildSyncPreflight(bundle: MetadataRestoreBundle | null, pending
       return [];
     }
     const restoredRow = originalNotes.find((row) => stringValue(row, "id") === draft.noteId);
+    if (
+      !createdNoteIds.has(draft.noteId) &&
+      draft.baseRevisionId &&
+      baseRevisionId &&
+      draft.baseRevisionId !== baseRevisionId
+    ) {
+      blockers.push(`“${draft.title}” was edited from a different restored Drive revision. Its website draft was preserved.`);
+    }
     if (!createdNoteIds.has(draft.noteId) && restoredRow && typeof restoredRow.updatedAt === "number" && restoredRow.updatedAt !== draft.baseUpdatedAt) {
       blockers.push(`“${draft.title}” changed in the restored backup after the website edit began.`);
     }
@@ -684,8 +726,11 @@ export function buildSyncPreflight(bundle: MetadataRestoreBundle | null, pending
 }
 
 export async function runSyncPreflight() {
-  const bundle = await loadMetadataRestoreBundle();
+  const [bundle, base, pending] = await Promise.all([
+    loadMetadataRestoreBundle(),
+    loadLocalSyncBase(),
+    loadSyncPendingChanges(),
+  ]);
   if (bundle) await reconcileLocalNoteDrafts(bundle);
-  const pending = await loadSyncPendingChanges();
-  return buildSyncPreflight(bundle, pending);
+  return buildSyncPreflight(base?.bundle ?? bundle, pending, base?.revision.revisionId);
 }

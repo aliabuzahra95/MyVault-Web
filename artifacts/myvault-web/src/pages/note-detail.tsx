@@ -10,6 +10,7 @@ import { NoteWorkspace, type NoteSaveStatus } from "@/components/note/note-works
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   loadLocalNoteDraft,
+  loadLocalSyncBase,
   loadMetadataRestoreBundle,
   reconcileLocalNoteDrafts,
   saveLocalNoteDraft,
@@ -45,6 +46,7 @@ export default function NoteDetailPage() {
   const editorReady = useRef(false);
   const baseCloudVersion = useRef(0);
   const baseUpdatedAt = useRef(0);
+  const baseRevisionId = useRef<string | undefined>(undefined);
   const latestDraft = useRef<LocalNoteDraft | null>(null);
   const lastSavedSignature = useRef("");
   const saveRevision = useRef(0);
@@ -73,8 +75,8 @@ export default function NoteDetailPage() {
 
     void loadMetadataRestoreBundle().then(async (bundle) => {
       if (bundle) await reconcileLocalNoteDrafts(bundle);
-      return Promise.all([loadLocalNoteDraft(id), Promise.resolve(bundle)]);
-    }).then(([draft, bundle]) => {
+      return Promise.all([loadLocalNoteDraft(id), Promise.resolve(bundle), loadLocalSyncBase()]);
+    }).then(([draft, bundle, syncBase]) => {
       if (cancelled) return;
 
       const sourceDocument = normalizeVaultRichTextDocument({
@@ -90,11 +92,13 @@ export default function NoteDetailPage() {
 
       baseCloudVersion.current = draft?.baseCloudVersion ?? bundle?.cloudVersion ?? 0;
       baseUpdatedAt.current = draft?.baseUpdatedAt ?? note.updatedAt;
+      baseRevisionId.current = draft ? draft.baseRevisionId : syncBase?.revision.revisionId;
       const initialDraft: LocalNoteDraft = {
         schemaVersion: 1,
         noteId: id,
         baseCloudVersion: baseCloudVersion.current,
         baseUpdatedAt: baseUpdatedAt.current,
+        baseRevisionId: baseRevisionId.current,
         title: draft?.title ?? note.title,
         mode: "rich_text",
         richTextDocument: draftDocument,
@@ -135,6 +139,7 @@ export default function NoteDetailPage() {
       noteId: id,
       baseCloudVersion: baseCloudVersion.current,
       baseUpdatedAt: baseUpdatedAt.current || note.updatedAt,
+      baseRevisionId: baseRevisionId.current,
       title,
       mode: "rich_text",
       richTextDocument: document,

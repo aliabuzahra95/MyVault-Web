@@ -1,6 +1,10 @@
 import type { MetadataRestoreBundle } from "@/lib/restore/metadataRestore";
 import type { Attachment, Block, Folder, Note } from "@workspace/api-client-react";
-import type { VaultRichTextDocument } from "@/lib/restore/vaultRichText";
+import {
+  blocksToVaultRichText,
+  parseVaultRichTextDocument,
+  type VaultRichTextDocument,
+} from "@/lib/restore/vaultRichText";
 import type { RestoredPdfAnnotation } from "@/lib/restore/restoredCorpus";
 import {
   accountStorageKey,
@@ -67,6 +71,7 @@ export type LocalNoteDraft = {
   noteId: string;
   baseCloudVersion: number;
   baseUpdatedAt: number;
+  baseRevisionId?: string;
   title: string;
   mode: "rich_text" | "blocks";
   richTextDocument: VaultRichTextDocument | null;
@@ -198,6 +203,11 @@ export type LocalSyncConflict = {
   createdAt: string;
   resolvedAt: string | null;
   resolution: "keep-web" | "keep-android" | "keep-both" | null;
+  fileName?: string;
+  fieldNames?: string[];
+  baseValue?: unknown;
+  webValue?: unknown;
+  remoteValue?: unknown;
 };
 
 export type LocalRecoverySnapshot = {
@@ -619,6 +629,124 @@ export function clearLocalNoteDraft(noteId: string) {
   return deleteForAccount(NOTE_DRAFT_STORE, noteId);
 }
 
+async function clearPendingNoteOperations(noteId: string) {
+  const operations = await loadPendingLocalSyncOperations();
+  await Promise.all(
+    operations
+      .filter((operation) => operation.entityType === "note" && operation.entityId === noteId)
+      .map((operation) => deleteForAccount(SYNC_JOURNAL_STORE, operation.id)),
+  );
+}
+
+function restoredRichTextForNote(bundle: MetadataRestoreBundle, noteId: string) {
+  const blocks = bundle.files.find((file) => file.fileName === "blocks.json")?.json;
+  if (!Array.isArray(blocks)) return null;
+  const richText = blocks.find((value) => (
+    typeof value === "object" && value !== null && !Array.isArray(value) &&
+    value.noteId === noteId && value.type === "rich_text" && typeof value.content === "string"
+  ));
+  if (!richText || typeof richText !== "object" || !("content" in richText) || typeof richText.content !== "string") return null;
+  return parseVaultRichTextDocument(richText.content);
+}
+
+function stableRichText(document: VaultRichTextDocument | null) {
+  if (!document) return null;
+  return JSON.stringify({
+    text: document.text,
+    styleMarks: document.styleMarks
+      .map((mark) => ({ ...mark }))
+      .sort((first, second) => first.start - second.start || first.end - second.end || first.style.localeCompare(second.style)),
+    noteLinks: document.noteLinks
+      .map((link) => ({ ...link }))
+      .sort((first, second) => first.start - second.start || first.end - second.end || first.noteId.localeCompare(second.noteId)),
+  });
+}
+
+export async function forkLocalNoteDraftAsRecoveredCopy(
+  noteId: string,
+  targetBase: LocalSyncBase,
+  label = "Recovered website edit",
+) {
+  const draft = await loadLocalNoteDraft(noteId);
+  if (!draft) return null;
+  const restored = restoredNoteRows(targetBase.bundle).find((note) => note.id === noteId);
+  if (!restored) return null;
+
+  const document = draft.richTextDocument ?? blocksToVaultRichText(draft.blocks);
+  const now = Date.now();
+  const recoveredId = `web-recovered-${crypto.randomUUID()}`;
+  const recoveredTitle = `${draft.title.trim() || String(restored.title || "Untitled note")} (${label})`;
+  const recoveredNote: Note = {
+    id: recoveredId,
+    folderId: typeof restored.folderId === "string" ? restored.folderId : null,
+    parentNoteId: typeof restored.parentNoteId === "string" ? restored.parentNoteId : null,
+    title: recoveredTitle,
+    bodyPreview: document.text,
+    wordCount: document.text.trim() ? document.text.trim().split(/\s+/u).length : 0,
+    characterCount: document.text.length,
+    isPinned: false,
+    isFolderPinned: false,
+    orderIndex: typeof restored.orderIndex === "number" ? restored.orderIndex + 1 : 0,
+    tagNames: [],
+    createdAt: now,
+    updatedAt: now,
+  };
+  const recoveredDraft: LocalNoteDraft = {
+    ...draft,
+    noteId: recoveredId,
+    baseCloudVersion: targetBase.bundle.cloudVersion,
+    baseUpdatedAt: now,
+    baseRevisionId: targetBase.revision.revisionId,
+    title: recoveredTitle,
+    richTextDocument: document,
+    savedAt: now,
+  };
+
+  await saveLocalCreatedNote(recoveredNote);
+  await saveLocalNoteDraft(recoveredDraft);
+  await clearPendingNoteOperations(noteId);
+  await clearLocalNoteDraft(noteId);
+  return recoveredId;
+}
+
+export async function recoverUnsafelyRebasedLegacyNoteDrafts(base: LocalSyncBase) {
+  const capturedAt = Date.parse(base.revision.capturedAt);
+  if (!Number.isFinite(capturedAt)) return { recovered: 0, removedRedundant: 0 };
+
+  const [drafts, createdNotes] = await Promise.all([loadLocalNoteDrafts(), loadLocalCreatedNotes()]);
+  const createdNoteIds = new Set(createdNotes.map((note) => note.id));
+  const notes = restoredNoteRows(base.bundle);
+  let recovered = 0;
+  let removedRedundant = 0;
+
+  for (const draft of drafts) {
+    if (draft.baseRevisionId || createdNoteIds.has(draft.noteId) || draft.savedAt >= capturedAt) continue;
+    const restored = notes.find((note) => note.id === draft.noteId);
+    if (!restored) continue;
+
+    const draftDocument = draft.richTextDocument ?? blocksToVaultRichText(draft.blocks);
+    const restoredDocument = restoredRichTextForNote(base.bundle, draft.noteId) ?? {
+      text: typeof restored.bodyPlainText === "string" ? restored.bodyPlainText : "",
+      styleMarks: [],
+      noteLinks: [],
+    };
+    const isRedundant = draft.title === restored.title &&
+      draft.isPinned === Boolean(restored.isPinned) &&
+      stableRichText(draftDocument) === stableRichText(restoredDocument);
+
+    if (isRedundant) {
+      await clearPendingNoteOperations(draft.noteId);
+      await clearLocalNoteDraft(draft.noteId);
+      removedRedundant += 1;
+      continue;
+    }
+
+    if (await forkLocalNoteDraftAsRecoveredCopy(draft.noteId, base)) recovered += 1;
+  }
+
+  return { recovered, removedRedundant };
+}
+
 function restoredNoteRows(bundle: MetadataRestoreBundle) {
   const notes = bundle.files.find((file) => file.fileName === "notes.json")?.json;
   return Array.isArray(notes)
@@ -647,19 +775,36 @@ export async function reconcileLocalNoteDrafts(bundle: MetadataRestoreBundle) {
     const alreadyCurrent = draft.baseCloudVersion === bundle.cloudVersion && restoredUpdatedAt === draft.baseUpdatedAt;
     if (alreadyCurrent) continue;
 
-    if (typeof restoredUpdatedAt === "number") {
-      await putForAccount(NOTE_DRAFT_STORE, draft.noteId, {
-        ...draft,
-        baseCloudVersion: bundle.cloudVersion,
-        baseUpdatedAt: restoredUpdatedAt,
-      });
-      rebased += 1;
-    } else {
-      conflicts += 1;
-    }
+    conflicts += 1;
   }
 
   return { rebased, removedDemoDrafts, conflicts };
+}
+
+export async function rebaseLocalNoteDraftsAfterSafePull(bundle: MetadataRestoreBundle, baseRevisionId: string) {
+  const [drafts, createdNotes] = await Promise.all([loadLocalNoteDrafts(), loadLocalCreatedNotes()]);
+  const createdNoteIds = new Set(createdNotes.map((note) => note.id));
+  const restoredNotes = new Map(restoredNoteRows(bundle).map((note) => [typeof note.id === "string" ? note.id : "", note]));
+  let rebased = 0;
+  let conflicts = 0;
+
+  for (const draft of drafts) {
+    if (createdNoteIds.has(draft.noteId)) continue;
+    const restoredUpdatedAt = restoredNotes.get(draft.noteId)?.updatedAt;
+    if (typeof restoredUpdatedAt !== "number") {
+      conflicts += 1;
+      continue;
+    }
+    await putForAccount(NOTE_DRAFT_STORE, draft.noteId, {
+      ...draft,
+      baseCloudVersion: bundle.cloudVersion,
+      baseUpdatedAt: restoredUpdatedAt,
+      baseRevisionId,
+    });
+    rebased += 1;
+  }
+
+  return { rebased, conflicts };
 }
 
 export async function saveLocalCreatedFolder(folder: Folder) {

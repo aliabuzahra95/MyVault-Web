@@ -9,6 +9,7 @@ import {
 import { reconcileMetadataBundles } from "../src/lib/sync/threeWayMerge";
 import { validateSyncCandidate } from "../src/lib/sync/validateSyncCandidate";
 import { inspectVaultRichTextEnvelope, serializeVaultRichTextEnvelope } from "../src/lib/restore/vaultRichText";
+import { tiptapToVaultRichText, vaultRichTextToTiptap } from "../src/lib/restore/vaultRichTextTiptap";
 import type { MetadataRestoreBundle } from "../src/lib/restore/metadataRestore";
 
 type JsonRow = Record<string, unknown>;
@@ -95,6 +96,22 @@ assert.equal(inspectVaultRichTextEnvelope(JSON.stringify({
   styleMarks: [{ start: 0, end: 6, style: "Bold", futureMember: true }],
   noteLinks: [],
 })), null, "Unknown style-mark members must block write-back.");
+
+const spacedText = "Heading\n\nFirst paragraph.\nSecond line.\n\nفقرة عربية\n\nFinal paragraph.";
+const arabicStart = spacedText.indexOf("فقرة عربية");
+const spacedDocument = {
+  text: spacedText,
+  styleMarks: [
+    { start: 0, end: 7, style: "Heading2" as const },
+    { start: 9, end: 14, style: "Bold" as const },
+    { start: arabicStart, end: arabicStart + "فقرة عربية".length, style: "Italic" as const },
+  ],
+  noteLinks: [],
+};
+const spacedRoundTrip = tiptapToVaultRichText(vaultRichTextToTiptap(spacedDocument), spacedDocument);
+assert.equal(spacedRoundTrip.text, spacedDocument.text, "Web editor conversion must preserve deliberate blank paragraphs exactly.");
+const sortMarks = (marks: typeof spacedDocument.styleMarks) => marks.toSorted((first, second) => first.style.localeCompare(second.style) || first.start - second.start);
+assert.deepEqual(sortMarks(spacedRoundTrip.styleMarks), sortMarks(spacedDocument.styleMarks), "Web editor conversion must preserve mixed-language formatting ranges.");
 
 const existingRichTextDraft: SyncPendingChanges["noteDrafts"][number] = {
     schemaVersion: 1,
@@ -214,6 +231,90 @@ const sameEntityConflict = reconcileMetadataBundles({ base, web: webConflict, re
 assert.deepEqual(sameEntityConflict.conflicts.map((item) => [item.fileName, item.entityId, item.kind]), [
   ["notes.json", "note-tawakkul", "same-entity-changed"],
 ]);
+
+const webFieldEdit = structuredClone(base);
+const remoteFieldEdit = structuredClone(base);
+replaceRow(webFieldEdit, "notes.json", "note-tawakkul", { title: "Web title only", updatedAt: 200 });
+replaceRow(remoteFieldEdit, "notes.json", "note-tawakkul", { isFavourite: true, updatedAt: 300 });
+const fieldMerge = reconcileMetadataBundles({ base, web: webFieldEdit, remote: remoteFieldEdit, touchedFiles: new Set(["notes.json"]) });
+assert.equal(fieldMerge.conflicts.length, 0, "Different fields on the same entity should merge automatically.");
+assert.equal(row(fieldMerge.bundle, "notes.json", "note-tawakkul").title, "Web title only");
+assert.equal(row(fieldMerge.bundle, "notes.json", "note-tawakkul").isFavourite, true);
+assert.equal(row(fieldMerge.bundle, "notes.json", "note-tawakkul").updatedAt, 300);
+
+const folderWeb = structuredClone(base);
+const folderRemote = structuredClone(base);
+replaceRow(folderWeb, "folders.json", "folder-aqidah", { name: "Web folder name", updatedAt: 220 });
+replaceRow(folderRemote, "folders.json", "folder-aqidah", { description: "Android folder description", updatedAt: 320 });
+const folderFieldMerge = reconcileMetadataBundles({ base, web: folderWeb, remote: folderRemote, touchedFiles: new Set(["folders.json"]) });
+assert.equal(folderFieldMerge.conflicts.length, 0, "Different folder fields should merge without losing either change.");
+assert.equal(row(folderFieldMerge.bundle, "folders.json", "folder-aqidah").name, "Web folder name");
+assert.equal(row(folderFieldMerge.bundle, "folders.json", "folder-aqidah").description, "Android folder description");
+
+const attachmentWeb = structuredClone(base);
+const attachmentRemote = structuredClone(base);
+rows(attachmentWeb, "attachments.json").push({
+  id: "pdf-created-on-web",
+  noteId: null,
+  libraryFolderId: "folder-library",
+  fileName: "Web upload.pdf",
+  mimeType: "application/pdf",
+  sizeBytes: 123,
+  localPath: "",
+  remoteUrl: null,
+  isPinned: false,
+  createdAt: 220,
+  deletedAt: null,
+  fileEntry: "files/pdf-created-on-web",
+});
+rows(attachmentRemote, "attachments.json").push({
+  id: "pdf-created-on-android",
+  noteId: null,
+  libraryFolderId: "folder-library",
+  fileName: "Android upload.pdf",
+  mimeType: "application/pdf",
+  sizeBytes: 456,
+  localPath: "/android/path.pdf",
+  remoteUrl: null,
+  isPinned: false,
+  createdAt: 320,
+  deletedAt: null,
+  fileEntry: "files/pdf-created-on-android",
+});
+const attachmentMerge = reconcileMetadataBundles({ base, web: attachmentWeb, remote: attachmentRemote, touchedFiles: new Set(["attachments.json"]) });
+assert.equal(attachmentMerge.conflicts.length, 0, "New PDFs with distinct stable IDs must merge.");
+assert.ok(rows(attachmentMerge.bundle, "attachments.json").some((item) => item.id === "pdf-created-on-web"));
+assert.ok(rows(attachmentMerge.bundle, "attachments.json").some((item) => item.id === "pdf-created-on-android"));
+
+const annotationWeb = structuredClone(base);
+const annotationRemote = structuredClone(base);
+rows(annotationWeb, "pdf_annotations.json").push({
+  ...row(base, "pdf_annotations.json", "annotation-highlight"),
+  id: "annotation-created-on-web",
+  noteText: "Web annotation",
+  updatedAt: 220,
+});
+rows(annotationRemote, "pdf_annotations.json").push({
+  ...row(base, "pdf_annotations.json", "annotation-highlight"),
+  id: "annotation-created-on-android",
+  noteText: "Android annotation",
+  updatedAt: 320,
+});
+const annotationMerge = reconcileMetadataBundles({ base, web: annotationWeb, remote: annotationRemote, touchedFiles: new Set(["pdf_annotations.json"]) });
+assert.equal(annotationMerge.conflicts.length, 0, "Independent PDF annotations must merge.");
+assert.ok(rows(annotationMerge.bundle, "pdf_annotations.json").some((item) => item.id === "annotation-created-on-web"));
+assert.ok(rows(annotationMerge.bundle, "pdf_annotations.json").some((item) => item.id === "annotation-created-on-android"));
+
+const progressWeb = structuredClone(base);
+const progressRemote = structuredClone(base);
+const progressId = String(rows(base, "pdf_reading_progress.json")[0]?.attachmentId);
+const webProgress = rows(progressWeb, "pdf_reading_progress.json").find((item) => item.attachmentId === progressId)!;
+const remoteProgress = rows(progressRemote, "pdf_reading_progress.json").find((item) => item.attachmentId === progressId)!;
+Object.assign(webProgress, { pageIndex: 20, progressPercent: 0.7, lastOpenedAt: 500, updatedAt: 500 });
+Object.assign(remoteProgress, { pageIndex: 15, progressPercent: 0.5, lastOpenedAt: 400, updatedAt: 400 });
+const progressMerge = reconcileMetadataBundles({ base, web: progressWeb, remote: progressRemote, touchedFiles: new Set(["pdf_reading_progress.json"]) });
+assert.equal(progressMerge.conflicts.length, 0, "Reading position is last-writer state and should choose the latest timestamp.");
+assert.equal(rows(progressMerge.bundle, "pdf_reading_progress.json").find((item) => item.attachmentId === progressId)?.pageIndex, 20);
 
 const webDelete = structuredClone(base);
 const remoteEdit = structuredClone(base);

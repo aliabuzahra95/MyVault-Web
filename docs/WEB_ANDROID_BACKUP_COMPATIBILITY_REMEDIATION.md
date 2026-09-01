@@ -75,3 +75,25 @@
 ## Acceptance boundary
 
 The mounted backup belongs to `aliabuzahra95@gmail.com`, not the approved disposable `aahforex@gmail.com` account. It was therefore used only for read-only full-contract preflight. Browser IndexedDB restore, reload persistence, Web backup-after-restore, and disposable Android round trip remain unperformed until the disposable account/session is available. No destructive operation was attempted on the mounted account.
+
+## 1 September 2026 bidirectional-note remediation
+
+Subsequent real-device testing exposed a browser-state defect beyond the metadata compatibility checks above. A clean iPad browser restored a Course note body correctly, while a previously used browser displayed the same note as zero words and zero characters. This proved the Drive object contained the body and isolated the loss to a retained local Website draft.
+
+The old restore path could unconditionally rebase that draft onto a newer Drive revision. An empty or stale browser draft could therefore continue shadowing the correct restored body and could later be uploaded as if it were based on the new Android backup.
+
+The corrected contract is:
+
+1. Base is the exact immutable Drive revision from which Website edits began.
+2. Website is the local draft/operation overlay and retains that Base revision ID.
+3. Incoming is the latest checksum-verified Drive generation.
+4. Startup and Backup reconcile Base, Website, and Incoming before visible replacement or upload.
+5. Same-note body conflicts preserve both versions as separate notes.
+6. Ambiguous structural conflicts preserve all payloads and stop without uploading.
+7. Failed upload leaves pending Website operations intact.
+
+Legacy browsers affected by the unsafe rebase are repaired locally: a stale differing draft is first copied into a recovered Website note, then the original note is allowed to display the verified Drive body. No Drive object is deleted or moved by this repair.
+
+Android paragraph fidelity was also audited. Stored Vault rich text already preserves literal newlines and positional formatting marks. The observed long-note layout drift came from Reading-mode display chunking that trimmed/skipped whitespace at chunk boundaries. The chunker now preserves every character exactly; storage and Android/Web backup representations remain unchanged.
+
+Automated contract and browser tests cover clean pull, retained empty drafts, legacy rebase recovery, concurrent same-note keep-both behavior, existing-note backup, independent PDFs/annotations, manifest-last commit, and upload failure recovery. Final acceptance still requires the deployed revision and a controlled physical Android round trip; it must not be inferred from the automated suite alone.

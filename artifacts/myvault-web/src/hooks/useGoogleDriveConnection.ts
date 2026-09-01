@@ -23,8 +23,8 @@ import {
 } from "@/lib/restore/driveManifestPreview";
 import { type MetadataRestoreBundle } from "@/lib/restore/metadataRestore";
 import {
-  applyMetadataRestorePreservingLocalChangesAtomically,
   createLocalRecoverySnapshot,
+  hasPendingLocalChanges,
   loadLocalSyncBase,
   loadMetadataRestoreBundle,
   saveLocalSyncBase,
@@ -33,6 +33,7 @@ import { getActiveAccountId } from "@/lib/sync/accountContext";
 import { computeBundleRevision } from "@/lib/sync/revision";
 import { stageVerifiedMetadataRestore, verifyDriveManifestFiles } from "@/lib/restore/verifiedDriveRestore";
 import { getGoogleDriveStartupAction } from "@/lib/googleDrive/authPolicy";
+import { applyIncomingDriveBundleSafely } from "@/lib/sync/safePull";
 
 export type GoogleDriveConnectionStatus =
   | "setup-needed"
@@ -107,6 +108,9 @@ async function readDriveManifestPreview(accessToken: string) {
 async function ensureBaseForBundle(bundle: MetadataRestoreBundle) {
   const currentBase = await loadLocalSyncBase();
   if (currentBase) return currentBase;
+  if (await hasPendingLocalChanges()) {
+    throw new Error("Website changes are present but their immutable Drive baseline is missing. Nothing was replaced; reconnect and restore before backing up.");
+  }
   const base = {
     schemaVersion: 1 as const,
     accountId: getActiveAccountId(),
@@ -115,6 +119,70 @@ async function ensureBaseForBundle(bundle: MetadataRestoreBundle) {
   };
   await saveLocalSyncBase(base);
   return base;
+}
+
+type AutomaticDriveRefresh = {
+  scan: MyVaultDriveScan;
+  manifestPreview: DriveManifestPreview | null;
+  metadataRestore: MetadataRestoreBundle | null;
+};
+
+const automaticRefreshes = new Map<string, Promise<AutomaticDriveRefresh>>();
+const completedAutomaticRefreshes = new Map<string, { completedAt: number; result: AutomaticDriveRefresh }>();
+
+async function refreshLatestDriveMetadataSafely(token: GoogleDriveToken, accountId: string) {
+  const completed = completedAutomaticRefreshes.get(accountId);
+  if (completed && Date.now() - completed.completedAt < 30_000 && !(await hasPendingLocalChanges())) return completed.result;
+  const existing = automaticRefreshes.get(accountId);
+  if (existing) return existing;
+
+  const refresh = (async () => {
+    const previewResult = await readDriveManifestPreview(token.accessToken);
+    assertGoogleDriveSession(token, accountId);
+    if (!previewResult.manifestPreview) {
+      const result = {
+        scan: previewResult.scan,
+        manifestPreview: null,
+        metadataRestore: await loadMetadataRestoreBundle(),
+      };
+      completedAutomaticRefreshes.set(accountId, { completedAt: Date.now(), result });
+      return result;
+    }
+
+    const driveVerification = await verifyDriveManifestFiles(
+      token.accessToken,
+      previewResult.manifestPreview.manifest,
+      previewResult.scan,
+    );
+    const metadataRestore = await stageVerifiedMetadataRestore({
+      accessToken: token.accessToken,
+      manifest: previewResult.manifestPreview.manifest,
+      compatibilityIssues: [...previewResult.manifestPreview.issues, ...driveVerification.issues],
+    });
+    assertGoogleDriveSession(token, accountId);
+    const [existingBase, hasPending] = await Promise.all([loadLocalSyncBase(), hasPendingLocalChanges()]);
+    const base = {
+      schemaVersion: 1 as const,
+      accountId,
+      revision: await computeBundleRevision(metadataRestore),
+      bundle: structuredClone(metadataRestore),
+    };
+    if (hasPending || existingBase?.revision.revisionId !== base.revision.revisionId) {
+      await createLocalRecoverySnapshot("before-automatic-safe-pull");
+    }
+    await applyIncomingDriveBundleSafely(metadataRestore, base);
+    const result = {
+      scan: previewResult.scan,
+      manifestPreview: previewResult.manifestPreview,
+      metadataRestore,
+    };
+    completedAutomaticRefreshes.set(accountId, { completedAt: Date.now(), result });
+    return result;
+  })();
+
+  automaticRefreshes.set(accountId, refresh);
+  void refresh.finally(() => automaticRefreshes.delete(accountId)).catch(() => undefined);
+  return refresh;
 }
 
 export function useGoogleDriveConnection() {
@@ -166,19 +234,33 @@ export function useGoogleDriveConnection() {
         .then(async ({ session }) => {
           const { token: verifiedToken, accountId } = session;
           assertGoogleDriveSession(verifiedToken, accountId);
-          const metadataRestore = await loadMetadataRestoreBundle();
-          assertGoogleDriveSession(verifiedToken, accountId);
-          if (metadataRestore) await ensureBaseForBundle(metadataRestore);
-          if (cancelled || currentRefreshId !== refreshId) return;
-          setState({
-            status: "connected",
-            token: verifiedToken,
-            accountId,
-            scan: null,
-            manifestPreview: null,
-            metadataRestore,
-            error: null,
-          });
+          const localMetadata = await loadMetadataRestoreBundle();
+          try {
+            if (localMetadata) await ensureBaseForBundle(localMetadata);
+            const refreshed = await refreshLatestDriveMetadataSafely(verifiedToken, accountId);
+            assertGoogleDriveSession(verifiedToken, accountId);
+            if (cancelled || currentRefreshId !== refreshId) return;
+            setState({
+              status: refreshed.manifestPreview ? "metadata-restored" : refreshed.scan.manifestFile ? "connected" : "no-backup",
+              token: verifiedToken,
+              accountId,
+              scan: refreshed.scan,
+              manifestPreview: refreshed.manifestPreview,
+              metadataRestore: refreshed.metadataRestore,
+              error: null,
+            });
+          } catch (error) {
+            if (cancelled || currentRefreshId !== refreshId) return;
+            setState({
+              status: "connected",
+              token: verifiedToken,
+              accountId,
+              scan: null,
+              manifestPreview: null,
+              metadataRestore: localMetadata,
+              error: `The automatic safe sync check stopped without replacing local work. ${getErrorMessage(error)}`,
+            });
+          }
         })
         .catch((error) => {
           if (cancelled || currentRefreshId !== refreshId) return;
@@ -211,7 +293,16 @@ export function useGoogleDriveConnection() {
     try {
       const token = await requestGoogleDriveToken();
       const { accountId } = await verifyAndActivateGoogleDriveSession(token);
-      setState((current) => ({ ...current, status: "connected", token, accountId, error: null }));
+      const refreshed = await refreshLatestDriveMetadataSafely(token, accountId);
+      setState({
+        status: refreshed.manifestPreview ? "metadata-restored" : refreshed.scan.manifestFile ? "connected" : "no-backup",
+        token,
+        accountId,
+        scan: refreshed.scan,
+        manifestPreview: refreshed.manifestPreview,
+        metadataRestore: refreshed.metadataRestore,
+        error: null,
+      });
       return token;
     } catch (error) {
       setState((current) => ({
@@ -242,13 +333,14 @@ export function useGoogleDriveConnection() {
         selectAccount: true,
       });
       const { accountId } = await verifyAndActivateGoogleDriveSession(token);
+      const refreshed = await refreshLatestDriveMetadataSafely(token, accountId);
       setState({
-        status: "connected",
+        status: refreshed.manifestPreview ? "metadata-restored" : refreshed.scan.manifestFile ? "connected" : "no-backup",
         token,
         accountId,
-        scan: null,
-        manifestPreview: null,
-        metadataRestore: null,
+        scan: refreshed.scan,
+        manifestPreview: refreshed.manifestPreview,
+        metadataRestore: refreshed.metadataRestore,
         error: null,
       });
       return token;
@@ -401,7 +493,7 @@ export function useGoogleDriveConnection() {
         bundle: structuredClone(metadataRestore),
       } as const;
       assertGoogleDriveSession(token, accountId);
-      await applyMetadataRestorePreservingLocalChangesAtomically(metadataRestore, base);
+      await applyIncomingDriveBundleSafely(metadataRestore, base);
 
       setState((current) => ({
         ...current,

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { chromium } from "/Users/aliah/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright/index.mjs";
 import { representativeAndroidBackup } from "./fixtures/representative-android-backup.ts";
 
@@ -85,6 +86,7 @@ try {
     const account = await import("/src/lib/sync/accountContext.ts");
     const store = await import("/src/lib/restore/localRestoreStore.ts");
     const revision = await import("/src/lib/sync/revision.ts");
+    const safePull = await import("/src/lib/sync/safePull.ts");
     account.setActiveGoogleAccount(accountA);
     await store.clearLocalWorkspaceData();
 
@@ -125,7 +127,7 @@ try {
       bundle: structuredClone(refreshedBundle),
     };
 
-    const result = await store.applyMetadataRestorePreservingLocalChangesAtomically(refreshedBundle, refreshedBase);
+    const result = await safePull.applyIncomingDriveBundleSafely(refreshedBundle, refreshedBase);
     const restoredBundle = await store.loadMetadataRestoreBundle();
     const retainedBase = await store.loadLocalSyncBase();
     const restoredNotes = restoredBundle?.files.find((file) => file.fileName === "notes.json")?.json;
@@ -141,7 +143,10 @@ try {
       refreshedDriveNoteVisible: Array.isArray(visibleNotes) && visibleNotes.some((note) => note.id === "note-tawakkul" && note.title === "Latest Drive title"),
     };
   }, { accountA, bundleA });
-  assert.deepEqual(preservingRestore.result, { preservedLocalChanges: true, preservedExistingBase: false });
+  assert.equal(preservingRestore.result.preservedLocalChanges, true);
+  assert.equal(preservingRestore.result.preservedExistingBase, false);
+  assert.ok(preservingRestore.result.mergedRemoteChanges > 0);
+  assert.ok(preservingRestore.result.mergedWebsiteChanges > 0);
   assert.equal(preservingRestore.restoredTitle, "Latest Drive title", "Restore must refresh the verified Drive metadata.");
   assert.equal(preservingRestore.retainedBaseTitle, "Latest Drive title", "A successful restore must become the merge baseline for retained website changes.");
   assert.equal(preservingRestore.localNoteRetained, true, "Restore must not erase a local browser note.");
@@ -149,10 +154,209 @@ try {
   assert.equal(preservingRestore.localNoteVisible, true, "The preserved local note must remain visible after restore.");
   assert.equal(preservingRestore.refreshedDriveNoteVisible, true, "The refreshed Drive corpus must be visible alongside local changes.");
 
-  const cleanRestore = await firstPage.evaluate(async ({ accountA, bundleA }) => {
+  const fieldLevelSafePull = await firstPage.evaluate(async ({ accountA, bundleA }) => {
     const account = await import("/src/lib/sync/accountContext.ts");
     const store = await import("/src/lib/restore/localRestoreStore.ts");
     const revision = await import("/src/lib/sync/revision.ts");
+    const richText = await import("/src/lib/restore/vaultRichText.ts");
+    const safePull = await import("/src/lib/sync/safePull.ts");
+    account.setActiveGoogleAccount(accountA);
+    await store.clearLocalWorkspaceData();
+
+    const original = structuredClone(bundleA);
+    await store.saveMetadataRestoreBundle(original);
+    const originalBase = {
+      schemaVersion: 1,
+      accountId: accountA,
+      revision: await revision.computeBundleRevision(original),
+      bundle: structuredClone(original),
+    };
+    await store.saveLocalSyncBase(originalBase);
+    const notes = original.files.find((file) => file.fileName === "notes.json")?.json;
+    const note = Array.isArray(notes) ? notes.find((row) => row.id === "note-tawakkul") : null;
+    const blocks = original.files.find((file) => file.fileName === "blocks.json")?.json;
+    const noteBlocks = Array.isArray(blocks) ? blocks.filter((row) => row.noteId === "note-tawakkul") : [];
+    await store.saveLocalNoteDraft({
+      schemaVersion: 1,
+      noteId: "note-tawakkul",
+      baseCloudVersion: original.cloudVersion,
+      baseUpdatedAt: note?.updatedAt ?? 0,
+      baseRevisionId: originalBase.revision.revisionId,
+      title: note?.title ?? "Original title",
+      mode: "rich_text",
+      richTextDocument: richText.blocksToVaultRichText(noteBlocks),
+      blocks: noteBlocks,
+      isPinned: !Boolean(note?.isPinned),
+      savedAt: 250,
+      pendingDriveSync: true,
+    });
+
+    const incoming = structuredClone(original);
+    incoming.cloudVersion += 1;
+    const incomingNotes = incoming.files.find((file) => file.fileName === "notes.json")?.json;
+    const incomingNote = Array.isArray(incomingNotes) ? incomingNotes.find((row) => row.id === "note-tawakkul") : null;
+    if (incomingNote) {
+      incomingNote.title = "Android changed title";
+      incomingNote.updatedAt = 300;
+    }
+    const incomingBase = {
+      schemaVersion: 1,
+      accountId: accountA,
+      revision: await revision.computeBundleRevision(incoming),
+      bundle: structuredClone(incoming),
+    };
+    const result = await safePull.applyIncomingDriveBundleSafely(incoming, incomingBase);
+    const reconciledNotes = result.reconciledBundle.files.find((file) => file.fileName === "notes.json")?.json;
+    const reconciled = Array.isArray(reconciledNotes) ? reconciledNotes.find((row) => row.id === "note-tawakkul") : null;
+    return {
+      title: reconciled?.title,
+      isPinned: reconciled?.isPinned,
+      expectedPinned: !Boolean(note?.isPinned),
+    };
+  }, { accountA, bundleA });
+  assert.equal(fieldLevelSafePull.title, "Android changed title", "The exact reconciled candidate must retain Android's independent field change.");
+  assert.equal(fieldLevelSafePull.isPinned, fieldLevelSafePull.expectedPinned, "The exact reconciled candidate must retain the Website's independent field change.");
+
+  const sameNoteSafePull = await firstPage.evaluate(async ({ accountA, bundleA }) => {
+    const account = await import("/src/lib/sync/accountContext.ts");
+    const store = await import("/src/lib/restore/localRestoreStore.ts");
+    const revision = await import("/src/lib/sync/revision.ts");
+    const safePull = await import("/src/lib/sync/safePull.ts");
+    account.setActiveGoogleAccount(accountA);
+    await store.clearLocalWorkspaceData();
+    const originalBundle = structuredClone(bundleA);
+    await store.saveMetadataRestoreBundle(originalBundle);
+    const originalBase = {
+      schemaVersion: 1,
+      accountId: accountA,
+      revision: await revision.computeBundleRevision(originalBundle),
+      bundle: structuredClone(originalBundle),
+    };
+    await store.saveLocalSyncBase(originalBase);
+    const originalNotes = originalBundle.files.find((file) => file.fileName === "notes.json")?.json;
+    const originalNote = Array.isArray(originalNotes) ? originalNotes.find((note) => note.id === "note-tawakkul") : null;
+    await store.saveLocalNoteDraft({
+      schemaVersion: 1,
+      noteId: "note-tawakkul",
+      baseCloudVersion: originalBundle.cloudVersion,
+      baseUpdatedAt: originalNote?.updatedAt ?? 0,
+      baseRevisionId: originalBase.revision.revisionId,
+      title: originalNote?.title ?? "Local note",
+      mode: "rich_text",
+      richTextDocument: { text: "", styleMarks: [], noteLinks: [] },
+      blocks: [],
+      isPinned: Boolean(originalNote?.isPinned),
+      savedAt: 500,
+      pendingDriveSync: true,
+    });
+
+    const incoming = structuredClone(originalBundle);
+    incoming.cloudVersion += 1;
+    const incomingBlocks = incoming.files.find((file) => file.fileName === "blocks.json")?.json;
+    const body = Array.isArray(incomingBlocks) ? incomingBlocks.find((block) => block.noteId === "note-tawakkul" && block.type === "rich_text") : null;
+    if (body) body.content = JSON.stringify({ text: "Android body must remain available.", styleMarks: [], noteLinks: [] });
+    const incomingBase = {
+      schemaVersion: 1,
+      accountId: accountA,
+      revision: await revision.computeBundleRevision(incoming),
+      bundle: structuredClone(incoming),
+    };
+    let error = "";
+    let result = null;
+    try {
+      result = await safePull.applyIncomingDriveBundleSafely(incoming, incomingBase);
+    } catch (caught) {
+      error = caught instanceof Error ? caught.message : String(caught);
+    }
+    const retainedBundle = await store.loadMetadataRestoreBundle();
+    const retainedBase = await store.loadLocalSyncBase();
+    const retainedDraft = await store.loadLocalNoteDraft("note-tawakkul");
+    const recovered = (await store.loadLocalCreatedNotes()).find((note) => note.title.includes("Website conflict copy"));
+    const recoveredDraft = recovered ? await store.loadLocalNoteDraft(recovered.id) : null;
+    const conflicts = await store.loadLocalSyncConflicts();
+    return {
+      error,
+      result,
+      bundleCloudVersion: retainedBundle?.cloudVersion,
+      baseCloudVersion: retainedBase?.bundle.cloudVersion,
+      draftText: retainedDraft?.richTextDocument?.text,
+      conflict: conflicts.find((item) => item.fileName === "blocks.json"),
+      recoveredTitle: recovered?.title,
+      recoveredDraftText: recoveredDraft?.richTextDocument?.text,
+    };
+  }, { accountA, bundleA });
+  assert.equal(sameNoteSafePull.error, "");
+  assert.equal(sameNoteSafePull.result?.recoveredConflictCopies, 1, "A same-note conflict must produce one explicit website copy.");
+  assert.equal(sameNoteSafePull.bundleCloudVersion, bundleA.cloudVersion + 1, "The verified incoming Drive note must become the active restored note.");
+  assert.equal(sameNoteSafePull.baseCloudVersion, bundleA.cloudVersion + 1, "The verified incoming Drive revision must become the next immutable Base.");
+  assert.equal(sameNoteSafePull.draftText, undefined, "The conflicting draft must stop shadowing the Drive note.");
+  assert.match(sameNoteSafePull.recoveredTitle ?? "", /Website conflict copy/);
+  assert.equal(sameNoteSafePull.recoveredDraftText, "", "The website version, including an empty body, must remain available as a recovered note.");
+  assert.ok(sameNoteSafePull.conflict?.baseValue, "The conflict record must retain the Base version.");
+  assert.ok(sameNoteSafePull.conflict?.webValue, "The conflict record must retain the Web version.");
+  assert.ok(sameNoteSafePull.conflict?.remoteValue, "The conflict record must retain the Android/Drive version.");
+  assert.equal(sameNoteSafePull.conflict?.resolution, "keep-both");
+
+  const legacyRebaseRecovery = await firstPage.evaluate(async ({ accountA, bundleA }) => {
+    const account = await import("/src/lib/sync/accountContext.ts");
+    const store = await import("/src/lib/restore/localRestoreStore.ts");
+    const revision = await import("/src/lib/sync/revision.ts");
+    const safePull = await import("/src/lib/sync/safePull.ts");
+    account.setActiveGoogleAccount(accountA);
+    await store.clearLocalWorkspaceData();
+
+    const latest = structuredClone(bundleA);
+    latest.cloudVersion += 3;
+    const latestBlocks = latest.files.find((file) => file.fileName === "blocks.json")?.json;
+    const latestBody = Array.isArray(latestBlocks) ? latestBlocks.find((block) => block.noteId === "note-tawakkul" && block.type === "rich_text") : null;
+    if (latestBody) latestBody.content = JSON.stringify({ text: "Drive body remains canonical.", styleMarks: [], noteLinks: [] });
+    const latestNotes = latest.files.find((file) => file.fileName === "notes.json")?.json;
+    const latestNote = Array.isArray(latestNotes) ? latestNotes.find((note) => note.id === "note-tawakkul") : null;
+    const latestBase = {
+      schemaVersion: 1,
+      accountId: accountA,
+      revision: await revision.computeBundleRevision(latest),
+      bundle: structuredClone(latest),
+    };
+    await store.saveMetadataRestoreBundle(latest);
+    await store.saveLocalSyncBase(latestBase);
+    await store.saveLocalNoteDraft({
+      schemaVersion: 1,
+      noteId: "note-tawakkul",
+      baseCloudVersion: latest.cloudVersion,
+      baseUpdatedAt: latestNote?.updatedAt ?? 0,
+      title: latestNote?.title ?? "Local note",
+      mode: "rich_text",
+      richTextDocument: { text: "", styleMarks: [], noteLinks: [] },
+      blocks: [],
+      isPinned: Boolean(latestNote?.isPinned),
+      savedAt: 500,
+      pendingDriveSync: true,
+    });
+
+    const result = await safePull.applyIncomingDriveBundleSafely(latest, latestBase);
+    const recovered = (await store.loadLocalCreatedNotes()).find((note) => note.title.includes("Recovered website edit"));
+    const recoveredDraft = recovered ? await store.loadLocalNoteDraft(recovered.id) : null;
+    const restored = await store.loadMetadataRestoreBundle();
+    const restoredBlocks = restored?.files.find((file) => file.fileName === "blocks.json")?.json;
+    const restoredBody = Array.isArray(restoredBlocks) ? restoredBlocks.find((block) => block.noteId === "note-tawakkul" && block.type === "rich_text") : null;
+    return {
+      result,
+      originalDraftRemoved: await store.loadLocalNoteDraft("note-tawakkul") === null,
+      recoveredTitle: recovered?.title,
+      recoveredDraftText: recoveredDraft?.richTextDocument?.text,
+      restoredBodyText: restoredBody ? JSON.parse(restoredBody.content).text : null,
+    };
+  }, { accountA, bundleA });
+  assert.equal(legacyRebaseRecovery.originalDraftRemoved, true, "The unsafe legacy overlay must stop shadowing the restored note.");
+  assert.match(legacyRebaseRecovery.recoveredTitle ?? "", /Recovered website edit/);
+  assert.equal(legacyRebaseRecovery.recoveredDraftText, "", "Even an empty legacy draft must be retained as an explicit recovered copy.");
+  assert.equal(legacyRebaseRecovery.restoredBodyText, "Drive body remains canonical.");
+
+  const cleanRestore = await firstPage.evaluate(async ({ accountA, bundleA }) => {
+    const account = await import("/src/lib/sync/accountContext.ts");
+    const revision = await import("/src/lib/sync/revision.ts");
+    const store = await import("/src/lib/restore/localRestoreStore.ts");
     account.setActiveGoogleAccount(accountA);
     await store.clearLocalWorkspaceData();
     const refreshedBundle = structuredClone(bundleA);
@@ -384,6 +588,9 @@ try {
     const emailAddress = bearer === "account-a-token" ? "account-a@example.com" : "aah4x-test@example.com";
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ user: { permissionId, displayName: "Account isolation fixture", emailAddress } }) });
   });
+  await sessionContext.route("https://www.googleapis.com/drive/v3/files**", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ files: [] }) });
+  });
   const sessionPage = await sessionContext.newPage();
   const isolatedBaseUrl = new URL(baseUrl);
   isolatedBaseUrl.hostname = "127.0.0.1";
@@ -428,9 +635,7 @@ try {
     window.dispatchEvent(new PopStateEvent("popstate"));
   });
   await sessionPage.getByText("aah4x-test@example.com").waitFor();
-  await sessionPage.getByTestId("restore-from-google-drive").click();
-  const restoreConfirmation = await sessionPage.getByRole("alertdialog").textContent();
-  assert.match(restoreConfirmation ?? "", /Restore from aah4x-test@example\.com\?/);
+  await sessionPage.getByText("No MyVault backup in this account").waitFor();
   if (process.env.MYVAULT_SCREENSHOT_PATH) {
     await sessionPage.waitForTimeout(300);
     await sessionPage.screenshot({ path: process.env.MYVAULT_SCREENSHOT_PATH, fullPage: false });
@@ -497,40 +702,13 @@ try {
   const existingNoteCommit = await firstPage.evaluate(async (accountId) => {
     const store = await import("/src/lib/restore/localRestoreStore.ts");
     const writeBack = await import("/src/lib/sync/driveWriteBack.ts");
-    const revision = await import("/src/lib/sync/revision.ts");
     const bundle = await store.loadMetadataRestoreBundle();
+    const localBase = await store.loadLocalSyncBase();
     const notes = bundle?.files.find((file) => file.fileName === "notes.json")?.json;
     const folders = bundle?.files.find((file) => file.fileName === "folders.json")?.json;
     const existing = Array.isArray(notes) ? notes.find((note) => note.id === "web-first-note") : null;
     const existingFolder = Array.isArray(folders) ? folders.find((folder) => folder.id === "web-first-folder") : null;
-    if (!bundle || !existing || !existingFolder) throw new Error("The first backup did not become the local sync base.");
-    const retainedOlderBase = structuredClone(bundle);
-    retainedOlderBase.cloudVersion = Math.max(0, bundle.cloudVersion - 1);
-    retainedOlderBase.files = retainedOlderBase.files.map((file) => {
-      if (file.fileName === "notes.json" && Array.isArray(file.json)) {
-        return {
-          ...file,
-          json: file.json.map((note) => note.id === "web-first-note"
-            ? { ...note, title: "Older baseline note title", updatedAt: 100 }
-            : note),
-        };
-      }
-      if (file.fileName === "folders.json" && Array.isArray(file.json)) {
-        return {
-          ...file,
-          json: file.json.map((folder) => folder.id === "web-first-folder"
-            ? { ...folder, name: "Older baseline folder title", updatedAt: 100 }
-            : folder),
-        };
-      }
-      return file;
-    });
-    await store.saveLocalSyncBase({
-      schemaVersion: 1,
-      accountId,
-      revision: await revision.computeBundleRevision(retainedOlderBase),
-      bundle: retainedOlderBase,
-    });
+    if (!bundle || !localBase || !existing || !existingFolder) throw new Error("The first backup did not become the local sync base.");
     await store.saveLocalCreatedFolder({
       id: "web-first-folder",
       parentId: null,
@@ -559,8 +737,9 @@ try {
     await store.saveLocalNoteDraft({
       schemaVersion: 1,
       noteId: "web-first-note",
-      baseCloudVersion: retainedOlderBase.cloudVersion,
-      baseUpdatedAt: 100,
+      baseCloudVersion: bundle.cloudVersion,
+      baseUpdatedAt: existing.updatedAt,
+      baseRevisionId: localBase.revision.revisionId,
       title: "Existing note edited on Web",
       mode: "rich_text",
       richTextDocument: {
@@ -570,7 +749,7 @@ try {
       },
       blocks: [],
       isPinned: false,
-      savedAt: Date.parse(bundle.restoredAt) - 1_000,
+      savedAt: Date.now(),
       pendingDriveSync: true,
     });
     const result = await writeBack.writeWebsiteChangesToDrive({ accessToken: "mock-token" });
@@ -594,6 +773,74 @@ try {
   assert.equal(JSON.parse(editedBlocks.find((block) => block.noteId === "web-first-note" && block.type === "rich_text")?.content).text, "An existing note now has an updated body.");
   assert.equal(JSON.parse(editedBlocks.find((block) => block.noteId === "new-note-after-restore" && block.type === "rich_text")?.content).text, "This note is added in the same backup as existing edits.");
   assert.equal(editedFolders.find((folder) => folder.id === "web-first-folder")?.name, "Existing folder renamed after restore");
+
+  await firstPage.evaluate(async () => {
+    const store = await import("/src/lib/restore/localRestoreStore.ts");
+    const bundle = await store.loadMetadataRestoreBundle();
+    const base = await store.loadLocalSyncBase();
+    const notes = bundle?.files.find((file) => file.fileName === "notes.json")?.json;
+    const note = Array.isArray(notes) ? notes.find((candidate) => candidate.id === "web-first-note") : null;
+    if (!bundle || !base || !note) throw new Error("Concurrent-note fixture is missing its immutable base.");
+    await store.saveLocalNoteDraft({
+      schemaVersion: 1,
+      noteId: "web-first-note",
+      baseCloudVersion: bundle.cloudVersion,
+      baseUpdatedAt: note.updatedAt,
+      baseRevisionId: base.revision.revisionId,
+      title: note.title,
+      mode: "rich_text",
+      richTextDocument: { text: "Website concurrent body.", styleMarks: [], noteLinks: [] },
+      blocks: [],
+      isPinned: Boolean(note.isPinned),
+      savedAt: Date.now(),
+      pendingDriveSync: true,
+    });
+  });
+
+  const concurrentManifestFile = [...driveFiles.values()].find((file) => file.name === "sync_manifest.json");
+  const concurrentManifest = JSON.parse(concurrentManifestFile.bytes.toString("utf8"));
+  concurrentManifest.cloudVersion = Math.max(Date.now(), concurrentManifest.cloudVersion + 1);
+  const mutateMetadata = (fileName, update) => {
+    const entry = concurrentManifest.entries.find((candidate) => candidate.fileName === fileName);
+    const file = driveFiles.get(entry.cloudFileId);
+    const json = JSON.parse(file.bytes.toString("utf8"));
+    update(json);
+    file.bytes = Buffer.from(JSON.stringify(json));
+    file.modifiedTime = new Date(concurrentManifest.cloudVersion).toISOString();
+    entry.sha256 = createHash("sha256").update(file.bytes).digest("hex");
+    entry.size = file.bytes.length;
+    entry.updatedAt = concurrentManifest.cloudVersion;
+  };
+  mutateMetadata("notes.json", (notes) => {
+    const note = notes.find((candidate) => candidate.id === "web-first-note");
+    note.bodyPlainText = "Android concurrent body.";
+    note.updatedAt = concurrentManifest.cloudVersion;
+  });
+  mutateMetadata("blocks.json", (blocks) => {
+    const block = blocks.find((candidate) => candidate.noteId === "web-first-note" && candidate.type === "rich_text");
+    block.content = JSON.stringify({ text: "Android concurrent body.", styleMarks: [], noteLinks: [] });
+  });
+  concurrentManifestFile.bytes = Buffer.from(JSON.stringify(concurrentManifest));
+  concurrentManifestFile.modifiedTime = new Date(concurrentManifest.cloudVersion).toISOString();
+
+  const concurrentCommit = await firstPage.evaluate(async () => {
+    const store = await import("/src/lib/restore/localRestoreStore.ts");
+    const writeBack = await import("/src/lib/sync/driveWriteBack.ts");
+    const result = await writeBack.writeWebsiteChangesToDrive({ accessToken: "mock-token" });
+    const conflicts = await store.loadLocalSyncConflicts();
+    return { result, resolvedConflict: conflicts.find((conflict) => conflict.resolution === "keep-both") };
+  });
+  assert.equal(concurrentCommit.result.status, "uploaded");
+  assert.equal(concurrentCommit.resolvedConflict?.resolution, "keep-both");
+  const concurrentFinalManifest = JSON.parse([...driveFiles.values()].find((file) => file.name === "sync_manifest.json").bytes.toString("utf8"));
+  const concurrentNotesEntry = concurrentFinalManifest.entries.find((entry) => entry.fileName === "notes.json");
+  const concurrentBlocksEntry = concurrentFinalManifest.entries.find((entry) => entry.fileName === "blocks.json");
+  const concurrentNotes = JSON.parse(driveFiles.get(concurrentNotesEntry.cloudFileId).bytes.toString("utf8"));
+  const concurrentBlocks = JSON.parse(driveFiles.get(concurrentBlocksEntry.cloudFileId).bytes.toString("utf8"));
+  const recoveredConflictNote = concurrentNotes.find((note) => note.title.includes("Website conflict copy"));
+  assert.ok(recoveredConflictNote, "The website version must be uploaded as an explicit recovered note.");
+  assert.equal(JSON.parse(concurrentBlocks.find((block) => block.noteId === "web-first-note" && block.type === "rich_text").content).text, "Android concurrent body.");
+  assert.equal(JSON.parse(concurrentBlocks.find((block) => block.noteId === recoveredConflictNote.id && block.type === "rich_text").content).text, "Website concurrent body.");
 
   driveFiles.clear();
   uploadOrder.length = 0;

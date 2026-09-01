@@ -6,9 +6,9 @@ Status: implementation contract
 
 ## Safety verdict
 
-The current Web write-back path is **not production-safe for two-way Android/Web use**. It has useful foundations (raw metadata restore, staged uploads, and manifest-last commit), but it does not yet maintain an immutable common Base, perform a true three-way reconciliation, isolate browser state by Google identity, retain coherent prior generations, or represent conflicts. It can also replace Android rich-text blocks with a narrower Web representation.
+The hardened path now maintains an immutable common Base, verifies a separate Incoming Drive generation, and reconciles pending Website work with a three-way merge before any upload. Same-note body conflicts preserve both versions as separate notes. Ambiguous structural conflicts fail closed with Base, Website, and Incoming payloads retained.
 
-Until the gates in this document pass, Drive write-back must fail closed. Local editing may continue, but the application must not describe locally saved work as synchronised.
+This prevents silent loss; it does not guess user intent for every possible conflict. Local editing may continue when Drive is unavailable, but the application must not describe locally saved work as synchronised until a verified manifest-last commit succeeds.
 
 ## Non-negotiable contract
 
@@ -30,17 +30,24 @@ Android writes backup format `myvault-backup`, version `1`. The incremental Driv
 
 Large attachments remain separate Drive files and are referenced by the Drive sync manifest. Android restore rebuilds its complete database from this canonical representation.
 
-## 2. Current Web restore architecture
+## 2. Web restore architecture
 
 Web downloads every metadata entry listed by `sync_manifest.json` and retains the parsed JSON in `MetadataRestoreBundle.files`. That raw bundle is a viable lossless envelope foundation. The visible Web corpus is a filtered projection of it.
 
-The current browser database stores one global `current` bundle and global edit stores. Restore reconciliation only rebases note drafts using `cloudVersion` and `updatedAt`; it does not preserve an immutable Base revision or reconcile a newer Drive backup with dirty Web work.
+The browser database is scoped by stable Google Drive account identity. It retains:
 
-## 3. Current Web write-back architecture
+- an immutable Base bundle and exact revision descriptor;
+- the currently displayed projection;
+- pending Website drafts and entity operations;
+- durable conflicts and recovery snapshots.
 
-Web currently overlays local arrays into the restored bundle, uploads new metadata and changed files to staging, checks `cloudVersion`, and updates `sync_manifest.json` last. This protects the old current manifest from many partial-upload failures.
+Restore and startup refresh download Drive into a staged Incoming bundle first. A clean browser applies verified Incoming atomically. A dirty browser computes Base -> Website and Base -> Incoming changes and reconciles them before replacing visible state.
 
-It is not yet a true three-way merge. It compares one numeric cloud version, has no conflict objects, clears all pending stores after commit, does not verify the committed generation by downloading it again, and does not retain a coherent historical manifest before switching current state.
+## 3. Web write-back architecture
+
+Backup first verifies the latest Drive generation and performs the same safe pull/reconciliation used at startup. It then builds the candidate from immutable Base plus pending Website operations, stages changed metadata, verifies downloaded bytes and checksums, and updates `sync_manifest.json` last.
+
+Pending operations are acknowledged only after the committed manifest and changed objects are read back successfully. A second remote change during the operation fails closed and leaves Website work pending for retry.
 
 ## 4. Entity identity
 
@@ -86,11 +93,13 @@ MyVault/
 
 The current Android client only depends on the canonical manifest and its entries. Web sidecars and historical manifests can live under `manifests` and `backups` without making Android restore depend on them.
 
-## 10. Can three-way reconciliation avoid an Android schema change?
+## 10. Three-way reconciliation and Android schema
 
-Yes, for a conservative first production-safe Web implementation. Web can retain the exact restored Base bundle, download CURRENT Drive into staging, compute BASE -> WEB operations from its journal, compute BASE -> CURRENT structural changes, and merge only deterministic cases. Android continues to read the existing version-1 backup.
+Yes. Android continues to read the existing version-1 backup.
 
-Blocks and entities without tombstones require conservative conflict rules. Same-note body edits, incompatible moves, delete-versus-edit, ambiguous absence, and unsupported formatting changes must block automatic commit.
+Independent record fields merge automatically. PDF reading progress uses the newest real update timestamp. New entities with distinct IDs coexist. Same-note body/body conflicts use a lossless keep-both resolution: Incoming remains on the original stable note ID and Website content becomes a recovered conflict copy with a new stable ID.
+
+Entities without sufficient revision or tombstone metadata still require conservative rules. Incompatible moves, delete-versus-edit, ambiguous absence, and unsupported transformations retain all three payloads and block automatic commit.
 
 ## 11. Android changes
 
@@ -198,4 +207,17 @@ Phases A through C are implemented on `feature/safe-sync-contract` and covered b
 
 Automated TypeScript and browser checks now cover the representative Android fixture, independent Android/Web edits, conflicts, unsupported deletions, current knowledge-link identity, account isolation, offline journalling, cross-tab locking, verified staging, manifest-last commit, and failed-upload recovery.
 
-Phase D remains the release gate: install a candidate Android build on a test device, restore a generated candidate containing the representative fixture, inspect the corpus, create another Android backup, restore that backup into a clean Web account namespace, and compare semantic equivalence. Canonical Drive write-back must remain explicitly pre-release until that physical Android round trip passes.
+### 1 September 2026 retained-draft and paragraph remediation
+
+- Startup performs a read-only verified safe pull before showing an editable workspace when the saved Google session can be recovered. It does not upload, delete, or move Drive objects.
+- Backup repeats that safe pull immediately before constructing a candidate, so a stale browser cannot upload over a newer Android generation.
+- Every new note draft records the exact Base revision. Missing or invalid revision binding fails closed instead of being silently rebased.
+- Browsers affected by the former unconditional rebase are repaired non-destructively. A redundant stale draft is removed; a different stale draft is converted into a separate recovered Website note before the original note displays the verified Drive body.
+- Concurrent edits to the same note keep both bodies in one Backup operation. The Incoming/Android version retains the original note identity and the Website version becomes a clearly titled conflict copy.
+- Different fields on the same entity merge deterministically. Independent folders, notes, PDFs, annotations, and PDF progress changes are covered by contract tests.
+- Web Vault rich-text tests cover blank paragraphs, headings, bold, italic, and mixed Arabic/English text. Android tests prove exact stored `\n` preservation and rich-text mark round trips.
+- Android long-note display chunking no longer trims or skips whitespace at chunk boundaries; concatenated chunks exactly reproduce the stored text.
+- The repair does not change the Android backup schema, Room schema, canonical metadata filenames, or manifest semantics.
+- No Google Drive object was deleted or moved while developing or validating this remediation.
+
+Automated compatibility is necessary but not sufficient for the final acceptance claim. The deployed revision must still pass the user-observed sequence on controlled real data: Android backup -> Web restore; Website edit of an existing note -> Web backup -> Android restore; Android -> Android restore; and paragraph/blank-line inspection on both clients. These results must be reported separately. A successful build, browser fixture, or one-way restore is not a substitute for that round trip.

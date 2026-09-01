@@ -6,6 +6,10 @@ export type ThreeWayConflict = {
   entityId: string;
   kind: "same-entity-changed" | "delete-edit" | "unsupported-file-shape";
   fileName: string;
+  fieldNames: string[];
+  baseValue: unknown;
+  webValue: unknown;
+  remoteValue: unknown;
 };
 
 export type ThreeWayMergeResult = {
@@ -43,6 +47,53 @@ function same(first: unknown, second: unknown) {
   return canonicalJson(first) === canonicalJson(second);
 }
 
+const MONOTONIC_METADATA_FIELDS = new Set(["updatedAt", "lastOpenedAt"]);
+
+function latestReadingProgress(web: Record<string, unknown>, remote: Record<string, unknown>) {
+  const timestamp = (value: Record<string, unknown>) => {
+    const updatedAt = typeof value.updatedAt === "number" ? value.updatedAt : 0;
+    const lastOpenedAt = typeof value.lastOpenedAt === "number" ? value.lastOpenedAt : 0;
+    return Math.max(updatedAt, lastOpenedAt);
+  };
+  return timestamp(web) >= timestamp(remote) ? web : remote;
+}
+
+function mergeRecordFields(
+  base: Record<string, unknown>,
+  web: Record<string, unknown>,
+  remote: Record<string, unknown>,
+) {
+  const merged: Record<string, unknown> = {};
+  const conflicts: string[] = [];
+  const keys = new Set([...Object.keys(base), ...Object.keys(web), ...Object.keys(remote)]);
+
+  for (const key of keys) {
+    const baseValue = base[key];
+    const webValue = web[key];
+    const remoteValue = remote[key];
+    const webChanged = !same(baseValue, webValue);
+    const remoteChanged = !same(baseValue, remoteValue);
+
+    if (webChanged && remoteChanged && !same(webValue, remoteValue)) {
+      if (
+        MONOTONIC_METADATA_FIELDS.has(key) &&
+        typeof webValue === "number" &&
+        typeof remoteValue === "number"
+      ) {
+        merged[key] = Math.max(webValue, remoteValue);
+      } else {
+        conflicts.push(key);
+      }
+      continue;
+    }
+
+    const selected = webChanged ? webValue : remoteValue;
+    if (selected !== undefined) merged[key] = selected;
+  }
+
+  return { merged, conflicts };
+}
+
 function arrayMap(fileName: string, value: unknown[]) {
   const rows = value.map((item) => [identityFor(fileName, item), item] as const);
   return rows.some(([identity]) => identity === null)
@@ -62,6 +113,10 @@ function mergeArrayFile(fileName: string, base: unknown[], web: unknown[], remot
         entityId: fileName,
         kind: "unsupported-file-shape" as const,
         fileName,
+        fieldNames: [],
+        baseValue: base,
+        webValue: web,
+        remoteValue: remote,
       }],
       mergedEntityCount: 0,
       remoteEntityCount: 0,
@@ -82,17 +137,46 @@ function mergeArrayFile(fileName: string, base: unknown[], web: unknown[], remot
     const webChanged = !same(baseValue, webValue);
     const remoteChanged = !same(baseValue, remoteValue);
 
+    let selected = webChanged ? webValue : remoteValue;
     if (webChanged && remoteChanged && !same(webValue, remoteValue)) {
-      conflicts.push({
-        entityType: fileName.replace(/\.json$/, ""),
-        entityId: id,
-        kind: webValue === undefined || remoteValue === undefined ? "delete-edit" : "same-entity-changed",
-        fileName,
-      });
-      continue;
+      if (isRecord(baseValue) && isRecord(webValue) && isRecord(remoteValue)) {
+        if (fileName === "pdf_reading_progress.json") {
+          selected = latestReadingProgress(webValue, remoteValue);
+          merged.push(selected);
+          mergedEntityCount += 1;
+          continue;
+        }
+        const fieldMerge = mergeRecordFields(baseValue, webValue, remoteValue);
+        if (fieldMerge.conflicts.length === 0) {
+          selected = fieldMerge.merged;
+        } else {
+          conflicts.push({
+            entityType: fileName.replace(/\.json$/, ""),
+            entityId: id,
+            kind: "same-entity-changed",
+            fileName,
+            fieldNames: fieldMerge.conflicts,
+            baseValue,
+            webValue,
+            remoteValue,
+          });
+          continue;
+        }
+      } else {
+        conflicts.push({
+          entityType: fileName.replace(/\.json$/, ""),
+          entityId: id,
+          kind: webValue === undefined || remoteValue === undefined ? "delete-edit" : "same-entity-changed",
+          fileName,
+          fieldNames: [],
+          baseValue,
+          webValue,
+          remoteValue,
+        });
+        continue;
+      }
     }
 
-    const selected = webChanged ? webValue : remoteValue;
     if (selected !== undefined) merged.push(selected);
     if (webChanged && remoteChanged) mergedEntityCount += 1;
     else if (webChanged) webEntityCount += 1;
@@ -147,6 +231,10 @@ export function reconcileMetadataBundles({
         entityId: remoteFile.fileName,
         kind: "unsupported-file-shape",
         fileName: remoteFile.fileName,
+        fieldNames: [],
+        baseValue: baseFile?.json,
+        webValue: webFile?.json,
+        remoteValue: remoteFile.json,
       });
       return remoteFile;
     }
@@ -168,6 +256,10 @@ export function reconcileMetadataBundles({
         entityId: remoteFile.fileName,
         kind: "same-entity-changed",
         fileName: remoteFile.fileName,
+        fieldNames: [],
+        baseValue: baseFile.json,
+        webValue: webFile.json,
+        remoteValue: remoteFile.json,
       });
       return remoteFile;
     }
@@ -188,6 +280,10 @@ export function reconcileMetadataBundles({
         entityId: webFile.fileName,
         kind: "unsupported-file-shape",
         fileName: webFile.fileName,
+        fieldNames: [],
+        baseValue: baseFile.json,
+        webValue: webFile.json,
+        remoteValue: undefined,
       });
     }
   }
