@@ -508,10 +508,12 @@ try {
     retainedOlderBase.cloudVersion = Math.max(0, bundle.cloudVersion - 1);
     retainedOlderBase.files = retainedOlderBase.files.map((file) => {
       if (file.fileName === "notes.json" && Array.isArray(file.json)) {
-        return { ...file, json: file.json.filter((note) => note.id !== "web-first-note") };
-      }
-      if (file.fileName === "blocks.json" && Array.isArray(file.json)) {
-        return { ...file, json: file.json.filter((block) => block.noteId !== "web-first-note") };
+        return {
+          ...file,
+          json: file.json.map((note) => note.id === "web-first-note"
+            ? { ...note, title: "Older baseline note title", updatedAt: 100 }
+            : note),
+        };
       }
       if (file.fileName === "folders.json" && Array.isArray(file.json)) {
         return {
@@ -557,8 +559,8 @@ try {
     await store.saveLocalNoteDraft({
       schemaVersion: 1,
       noteId: "web-first-note",
-      baseCloudVersion: bundle.cloudVersion,
-      baseUpdatedAt: existing.updatedAt,
+      baseCloudVersion: retainedOlderBase.cloudVersion,
+      baseUpdatedAt: 100,
       title: "Existing note edited on Web",
       mode: "rich_text",
       richTextDocument: {
@@ -568,7 +570,7 @@ try {
       },
       blocks: [],
       isPinned: false,
-      savedAt: 450,
+      savedAt: Date.parse(bundle.restoredAt) + 1_000,
       pendingDriveSync: true,
     });
     const result = await writeBack.writeWebsiteChangesToDrive({ accessToken: "mock-token" });
