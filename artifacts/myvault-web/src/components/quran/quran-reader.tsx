@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link, useLocation, useParams } from "wouter";
-import { ArrowLeft, ArrowRight, BookText, Check, ChevronLeft, ChevronRight, Compass, Copy, Hash, Languages, Loader2, MapPin } from "lucide-react";
+import { ArrowLeft, BookText, ChevronLeft, ChevronRight, Compass, Copy, CornerDownLeft, Hash, Languages, Loader2, MapPin, Minus, Plus, Settings2 } from "lucide-react";
 import { PageContainer } from "@/components/page-layout";
 import { QuranErrorState, QuranLoadingState, useQuranCorpus } from "@/components/quran/quran-shared";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
@@ -26,44 +26,85 @@ import { cn } from "@/lib/utils";
 const BISMILLAH = "بِسْمِ اللَّهِ الرَّحْمَنِ الرَّحِيمِ";
 const EMPTY_TRANSLATIONS = new Map<string, QuranTranslationEntry>();
 
-function ReaderHeader({ surah, currentAyah, onJump, translationEnabled, translationSource, translationLoading, onToggleTranslation, onSelectTranslation }: {
+function ReaderHeader({ surah, currentAyah, onJump, onOpenDisplay }: {
   surah: QuranSurah;
   currentAyah: number;
   onJump: (ayahNumber: number) => void;
-  translationEnabled: boolean;
-  translationSource: QuranTranslationSourceId;
-  translationLoading: boolean;
-  onToggleTranslation: () => void;
-  onSelectTranslation: (source: QuranTranslationSourceId) => void;
+  onOpenDisplay: () => void;
 }) {
   const [jumpValue, setJumpValue] = useState(String(currentAyah));
   useEffect(() => setJumpValue(String(currentAyah)), [currentAyah]);
   return (
-    <div className="sticky top-0 z-20 -mx-5 border-b border-border/70 bg-background/95 px-5 py-3 backdrop-blur sm:-mx-7 sm:px-7 lg:-mx-10 lg:px-10">
-      <div className="mx-auto flex max-w-[960px] flex-wrap items-center gap-2.5">
-        <Link href="/quran" className="flex h-9 items-center gap-2 rounded-lg px-2 text-sm font-semibold text-muted-foreground hover:bg-muted hover:text-foreground">
-          <ArrowLeft className="h-4 w-4" /><span className="hidden sm:inline">All Surahs</span>
+    <div className="sticky top-0 z-20 -mx-5 border-b border-border/60 bg-background/90 px-5 py-2.5 backdrop-blur-xl sm:-mx-7 sm:px-7 lg:-mx-10 lg:px-10">
+      <div className="mx-auto flex max-w-[980px] flex-wrap items-center gap-2 sm:flex-nowrap">
+        <Link href="/quran" className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground" aria-label="Back to all Surahs">
+          <ArrowLeft className="h-4 w-4" />
         </Link>
-        <div className="min-w-[130px] flex-1">
-          <div className="flex items-baseline gap-2"><h1 className="truncate text-lg font-bold text-foreground">{surah.transliteratedName}</h1><span className="quran-arabic text-lg text-muted-foreground" dir="rtl" lang="ar">{surah.arabicName}</span></div>
-          <p className="text-xs font-medium text-muted-foreground">Ayah {currentAyah} of {surah.ayahCount}</p>
+        <div className="min-w-[9rem] flex-1">
+          <div className="flex items-baseline gap-2"><h1 className="truncate text-sm font-semibold text-foreground sm:text-base">{surah.transliteratedName}</h1><span className="quran-arabic hidden text-base text-muted-foreground sm:inline" dir="rtl" lang="ar">{surah.arabicName}</span></div>
+          <p className="text-[10px] font-semibold tabular-nums text-muted-foreground">{currentAyah} / {surah.ayahCount}</p>
         </div>
-        <div className="order-3 flex w-full items-center gap-2 sm:order-none sm:w-auto">
-          <button type="button" onClick={onToggleTranslation} className={cn("inline-flex h-9 flex-1 items-center justify-center gap-2 rounded-lg border px-3 text-xs font-bold transition-colors sm:flex-none", translationEnabled ? "border-primary/30 bg-primary/[0.08] text-primary" : "border-border bg-card text-muted-foreground")} aria-pressed={translationEnabled} data-testid="quran-translation-toggle">
-            <Languages className="h-3.5 w-3.5" /> Translation {translationEnabled ? "On" : "Off"}
-          </button>
-          <label className="sr-only" htmlFor="quran-translation-source">Translation source</label>
-          <select id="quran-translation-source" value={translationSource} onChange={(event) => onSelectTranslation(event.target.value as QuranTranslationSourceId)} disabled={translationLoading} className="h-9 min-w-0 flex-1 rounded-lg border border-border bg-card px-2 text-xs font-semibold text-foreground outline-none focus:ring-2 focus:ring-ring sm:w-[164px]" data-testid="quran-translation-source">
-            {QURAN_TRANSLATION_SOURCES.map((source) => <option key={source.id} value={source.id}>{"shortName" in source ? source.shortName : source.name}</option>)}
-          </select>
-        </div>
-        <form className="flex items-center gap-2" onSubmit={(event) => { event.preventDefault(); const ayah = Number(jumpValue); if (Number.isInteger(ayah) && ayah >= 1 && ayah <= surah.ayahCount) onJump(ayah); }}>
+        <form className="flex h-9 items-center rounded-lg border border-border/70 bg-card/75 pl-2 focus-within:border-primary/50" onSubmit={(event) => { event.preventDefault(); const ayah = Number(jumpValue); if (Number.isInteger(ayah) && ayah >= 1 && ayah <= surah.ayahCount) onJump(ayah); }}>
           <label className="sr-only" htmlFor="quran-ayah-jump">Jump to ayah</label>
-          <div className="flex h-9 items-center rounded-lg border border-border bg-card px-2"><Hash className="h-3.5 w-3.5 text-muted-foreground" /><input id="quran-ayah-jump" type="number" min={1} max={surah.ayahCount} value={jumpValue} onChange={(event) => setJumpValue(event.target.value)} className="h-8 w-12 bg-transparent px-1 text-center text-sm font-semibold tabular-nums outline-none" data-testid="quran-ayah-jump" /></div>
-          <button type="submit" className="flex h-9 items-center justify-center rounded-lg bg-primary px-3 text-xs font-bold text-primary-foreground hover:opacity-90">Go</button>
+          <span className="text-[10px] font-semibold text-muted-foreground">Ayah</span><input id="quran-ayah-jump" type="number" min={1} max={surah.ayahCount} value={jumpValue} onChange={(event) => setJumpValue(event.target.value)} className="h-8 w-11 bg-transparent px-1 text-center text-xs font-semibold tabular-nums outline-none" data-testid="quran-ayah-jump" />
+          <button type="submit" className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-primary" aria-label="Jump to ayah"><CornerDownLeft className="h-3.5 w-3.5" /></button>
         </form>
+        <button type="button" onClick={onOpenDisplay} className="flex h-9 items-center gap-2 rounded-lg px-2.5 text-xs font-semibold text-muted-foreground transition-colors hover:bg-muted hover:text-foreground" data-testid="quran-display-settings"><Settings2 className="h-4 w-4" /><span className="hidden sm:inline">Display</span></button>
       </div>
     </div>
+  );
+}
+
+function QuranDisplayPanel({ open, onOpenChange, arabicFontPercent, translationEnabled, translationSource, translationLoading, tafsirSourceId, onArabicFontPercent, onToggleTranslation, onSelectTranslation, onSelectTafsir }: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  arabicFontPercent: number;
+  translationEnabled: boolean;
+  translationSource: QuranTranslationSourceId;
+  translationLoading: boolean;
+  tafsirSourceId: number;
+  onArabicFontPercent: (percent: number) => void;
+  onToggleTranslation: () => void;
+  onSelectTranslation: (source: QuranTranslationSourceId) => void;
+  onSelectTafsir: (sourceId: number) => void;
+}) {
+  const isMobile = useIsMobile();
+  const [sources, setSources] = useState<QuranTafsirSource[]>([MUKHTASAR_TAFSIR_SOURCE]);
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    void loadTafsirSources().then((next) => { if (!cancelled) setSources(next); });
+    return () => { cancelled = true; };
+  }, [open]);
+  return (
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent side={isMobile ? "bottom" : "right"} className={cn("flex flex-col gap-0 overflow-hidden border-border bg-background p-0 data-[state=closed]:duration-150 data-[state=open]:duration-150", isMobile ? "h-auto max-h-[88dvh] rounded-t-2xl" : "w-[min(420px,42vw)] sm:max-w-[420px]")} data-testid="quran-display-panel">
+        <SheetHeader className="border-b border-border/60 px-5 py-5 text-left sm:px-6">
+          <div className="pr-10 text-[10px] font-bold uppercase tracking-[0.17em] text-primary">Reader</div>
+          <SheetTitle className="pr-10 text-xl">Display settings</SheetTitle>
+          <SheetDescription>Adjust the reading surface without changing the Qur’an text.</SheetDescription>
+        </SheetHeader>
+        <div className="space-y-7 overflow-y-auto px-5 py-6 sm:px-6">
+          <section>
+            <div className="mb-3 flex items-center justify-between"><div><h3 className="text-sm font-semibold text-foreground">Arabic size</h3><p className="mt-0.5 text-xs text-muted-foreground">Qur’anic text only</p></div><span className="text-xs font-semibold tabular-nums text-muted-foreground">{arabicFontPercent}%</span></div>
+            <div className="grid grid-cols-[2.5rem_1fr_2.5rem] items-center gap-3">
+              <button type="button" onClick={() => onArabicFontPercent(arabicFontPercent - 10)} disabled={arabicFontPercent <= 70} className="flex h-10 items-center justify-center rounded-lg border border-border text-muted-foreground hover:border-primary/30 hover:text-primary disabled:opacity-35" aria-label="Decrease Arabic text size"><Minus className="h-4 w-4" /></button>
+              <div className="quran-arabic text-center text-2xl text-foreground" dir="rtl" lang="ar">بِسْمِ اللهِ</div>
+              <button type="button" onClick={() => onArabicFontPercent(arabicFontPercent + 10)} disabled={arabicFontPercent >= 140} className="flex h-10 items-center justify-center rounded-lg border border-border text-muted-foreground hover:border-primary/30 hover:text-primary disabled:opacity-35" aria-label="Increase Arabic text size"><Plus className="h-4 w-4" /></button>
+            </div>
+          </section>
+          <section className="border-t border-border/60 pt-6">
+            <div className="flex items-center justify-between gap-4"><div><h3 className="text-sm font-semibold text-foreground">Translation</h3><p className="mt-0.5 text-xs text-muted-foreground">Show beneath each ayah</p></div><button type="button" onClick={onToggleTranslation} className={cn("relative h-6 w-11 rounded-full transition-colors duration-150", translationEnabled ? "bg-primary" : "bg-muted")} aria-pressed={translationEnabled} data-testid="quran-translation-toggle"><span className={cn("absolute left-0 top-0.5 h-5 w-5 rounded-full bg-white shadow-sm transition-transform duration-150", translationEnabled ? "translate-x-5" : "translate-x-0.5")} /></button></div>
+            <label className="mt-4 block text-xs font-semibold text-muted-foreground" htmlFor="quran-translation-source">Translation source</label>
+            <select id="quran-translation-source" value={translationSource} onChange={(event) => onSelectTranslation(event.target.value as QuranTranslationSourceId)} disabled={translationLoading || !translationEnabled} className="mt-1.5 h-10 w-full rounded-lg border border-border bg-card px-3 text-sm font-medium text-foreground outline-none focus:ring-2 focus:ring-ring disabled:opacity-50" data-testid="quran-translation-source">{QURAN_TRANSLATION_SOURCES.map((source) => <option key={source.id} value={source.id}>{source.name}</option>)}</select>
+          </section>
+          <section className="border-t border-border/60 pt-6">
+            <label className="block text-sm font-semibold text-foreground" htmlFor="quran-default-tafsir-source">Default Tafsir</label><p className="mt-0.5 text-xs text-muted-foreground">Used when opening Tafsir for an ayah</p>
+            <select id="quran-default-tafsir-source" value={sources.some((source) => source.id === tafsirSourceId) ? tafsirSourceId : -1} onChange={(event) => onSelectTafsir(Number(event.target.value))} className="mt-3 h-10 w-full rounded-lg border border-border bg-card px-3 text-sm font-medium text-foreground outline-none focus:ring-2 focus:ring-ring" data-testid="quran-display-tafsir-source">{sources.map((source) => <option key={source.id} value={source.id}>{source.name} · {source.language}</option>)}</select>
+          </section>
+        </div>
+      </SheetContent>
+    </Sheet>
   );
 }
 
@@ -84,9 +125,9 @@ function TranslationText({ entry, fontPercent }: { entry: QuranTranslationEntry;
   parts.push(entry.text.slice(cursor));
   const expanded = entry.footnotes.find((footnote) => footnote.id === expandedFootnoteId) ?? null;
   return (
-    <div className="mt-4 border-l-2 border-border/70 pl-4 sm:ml-14 sm:pl-5" dir="ltr" lang="en">
-      <p className="text-muted-foreground" style={{ fontSize: `${0.95 * Math.min(130, Math.max(80, fontPercent)) / 100}rem`, lineHeight: 1.72 }} data-testid="quran-translation-text">{parts}</p>
-      {expanded ? <div className="mt-3 animate-in rounded-xl border border-border/80 bg-muted/40 px-4 py-3 text-sm leading-6 text-muted-foreground fade-in slide-in-from-top-1 duration-150" onClick={(event) => event.stopPropagation()} data-testid={`quran-footnote-content-${expanded.label}`}><div className="mb-1 text-[10px] font-extrabold uppercase tracking-[0.14em] text-primary">Footnote {expanded.label}</div>{expanded.text}</div> : null}
+    <div className="mt-3" dir="ltr" lang="en">
+      <p className="max-w-[48rem] text-foreground/72 dark:text-foreground/70" style={{ fontSize: `${0.96 * Math.min(130, Math.max(80, fontPercent)) / 100}rem`, lineHeight: 1.78 }} data-testid="quran-translation-text">{parts}</p>
+      {expanded ? <div className="mt-3 animate-in border-l-2 border-primary/35 bg-muted/30 px-4 py-3 text-sm leading-6 text-muted-foreground fade-in slide-in-from-top-1 duration-150" onClick={(event) => event.stopPropagation()} data-testid={`quran-footnote-content-${expanded.label}`}><div className="mb-1 text-[10px] font-bold uppercase tracking-[0.14em] text-primary">Footnote {expanded.label}</div>{expanded.text}</div> : null}
     </div>
   );
 }
@@ -98,32 +139,33 @@ type AyahRowProps = {
   selected: boolean;
   translationEnabled: boolean;
   translation: QuranTranslationEntry | null;
+  arabicFontPercent: number;
   translationFontPercent: number;
   onSelect: (ayahNumber: number) => void;
   onCopy: (action: "arabic" | "translation" | "reference", ayah: QuranAyah, translation: QuranTranslationEntry | null) => void;
   onOpenTafsir: (ayah: QuranAyah) => void;
 };
 
-const QuranAyahRow = memo(function QuranAyahRow({ ayah, surah, current, selected, translationEnabled, translation, translationFontPercent, onSelect, onCopy, onOpenTafsir }: AyahRowProps) {
+const QuranAyahRow = memo(function QuranAyahRow({ ayah, surah, current, selected, translationEnabled, translation, arabicFontPercent, translationFontPercent, onSelect, onCopy, onOpenTafsir }: AyahRowProps) {
   const reference = quranReference(surah.transliteratedName, surah.number, ayah.ayahNumber);
   const showTranslation = translationIsVisible(translationEnabled, translation);
   const select = () => onSelect(ayah.ayahNumber);
   const nestedControl = (target: EventTarget | null) => target instanceof Element && Boolean(target.closest("button, a, select, input"));
   return (
-    <article id={`ayah-${ayah.ayahNumber}`} data-ayah={ayah.ayahNumber} className={cn("quran-ayah relative scroll-mt-44 border-b border-border/60 px-5 py-7 transition-[background-color,box-shadow] duration-150 last:border-b-0 sm:px-9 sm:py-9", current ? "bg-primary/[0.04]" : "bg-card", selected && "z-[1] bg-primary/[0.075] shadow-[inset_3px_0_0_hsl(var(--primary))] dark:bg-primary/[0.09]")} aria-current={current ? "location" : undefined} aria-label={`${reference}${selected ? ", selected" : ""}. Select for ayah actions.`} tabIndex={0} onClick={(event) => { if (!nestedControl(event.target)) select(); }} onKeyDown={(event) => { if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); select(); } }} data-selected={selected ? "true" : "false"} data-testid={`quran-ayah-${ayah.ayahNumber}`}>
-      <div className="flex items-start gap-4 sm:gap-6">
-        <Link href={`/quran/${surah.number}/${ayah.ayahNumber}`} className="mt-2 flex h-8 min-w-8 shrink-0 items-center justify-center rounded-full border border-primary/20 bg-primary/5 px-2 text-xs font-bold tabular-nums text-primary hover:bg-primary/10" aria-label={`Link to ${surah.transliteratedName} ayah ${ayah.ayahNumber}`}>{ayah.ayahNumber}</Link>
-        <p className="quran-arabic min-w-0 flex-1 text-right text-[clamp(1.85rem,4vw,2.55rem)] leading-[2.15] text-foreground" dir="rtl" lang="ar">{ayah.arabicText}</p>
+    <article id={`ayah-${ayah.ayahNumber}`} data-ayah={ayah.ayahNumber} className={cn("quran-ayah group relative scroll-mt-28 border-b border-border/55 px-2 py-5 transition-[background-color,box-shadow] duration-150 last:border-b-0 sm:scroll-mt-36 sm:px-5 sm:py-6", selected && "z-[1] bg-primary/[0.022] shadow-[inset_2px_0_0_hsl(var(--primary)/0.72)] dark:bg-primary/[0.035]")} aria-current={current ? "location" : undefined} aria-label={`${reference}${selected ? ", selected" : ""}. Select for ayah actions.`} tabIndex={0} onClick={(event) => { if (!nestedControl(event.target)) select(); }} onKeyDown={(event) => { if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); select(); } }} data-selected={selected ? "true" : "false"} data-testid={`quran-ayah-${ayah.ayahNumber}`}>
+      <div className="mb-2 flex min-h-7 items-center gap-2">
+        <Link href={`/quran/${surah.number}/${ayah.ayahNumber}`} className="rounded px-1 py-0.5 text-[11px] font-semibold tabular-nums text-muted-foreground transition-colors hover:bg-muted hover:text-primary" aria-label={`Link to ${surah.transliteratedName} ayah ${ayah.ayahNumber}`}>{surah.number}:{ayah.ayahNumber}</Link>
+        {current ? <span className="flex items-center gap-1 text-[9px] font-bold uppercase tracking-[0.12em] text-primary"><MapPin className="h-3 w-3" /> Last read</span> : null}
+        <span className="ml-auto text-[9px] font-semibold uppercase tracking-[0.12em] text-muted-foreground/70 opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100">Select for actions</span>
       </div>
+      <p className="quran-arabic text-right text-foreground" style={{ fontSize: `${2.1 * Math.min(140, Math.max(70, arabicFontPercent)) / 100}rem`, lineHeight: 1.95 }} dir="rtl" lang="ar">{ayah.arabicText}</p>
       {showTranslation && translation ? <TranslationText entry={translation} fontPercent={translationFontPercent} /> : null}
-      <div className="mt-3 flex items-center justify-end gap-2 text-[11px] font-medium text-muted-foreground">{current ? <><MapPin className="h-3.5 w-3.5 text-primary" /> Current reading position</> : `${surah.number}:${ayah.ayahNumber}`}</div>
       {selected ? (
-        <div className="mt-4 flex animate-in flex-wrap items-center gap-2 border-t border-primary/15 pt-3 fade-in slide-in-from-top-1 duration-150" role="toolbar" aria-label={`Actions for ${reference}`} data-testid="quran-ayah-toolbar" onClick={(event) => event.stopPropagation()}>
+        <div className="mt-3 flex animate-in flex-wrap items-center gap-1.5 border-t border-border/55 pt-2.5 fade-in slide-in-from-top-1 duration-150" role="toolbar" aria-label={`Actions for ${reference}`} data-testid="quran-ayah-toolbar" onClick={(event) => event.stopPropagation()}>
           <button type="button" onClick={() => onOpenTafsir(ayah)} className="quran-action-button" data-testid="quran-open-tafsir"><BookText className="h-3.5 w-3.5" /> Tafsir</button>
           <button type="button" onClick={() => onCopy("arabic", ayah, translation)} className="quran-action-button" data-testid="quran-copy-arabic"><Copy className="h-3.5 w-3.5" /> Arabic</button>
           {showTranslation ? <button type="button" onClick={() => onCopy("translation", ayah, translation)} className="quran-action-button" data-testid="quran-copy-translation"><Languages className="h-3.5 w-3.5" /> Translation</button> : null}
           <button type="button" onClick={() => onCopy("reference", ayah, translation)} className="quran-action-button" data-testid="quran-copy-reference"><Hash className="h-3.5 w-3.5" /> Reference</button>
-          <span className="ml-auto hidden items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-primary sm:flex"><Check className="h-3 w-3" /> Selected</span>
         </div>
       ) : null}
     </article>
@@ -174,17 +216,17 @@ function TafsirPanel({ open, ayah, surah, selectedSourceId, onSelectedSourceId, 
   const reference = ayah ? quranReference(surah.transliteratedName, surah.number, ayah.ayahNumber) : "";
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent side={isMobile ? "bottom" : "right"} className={cn("flex flex-col gap-0 overflow-hidden border-border bg-background p-0", isMobile ? "h-[92dvh] rounded-t-2xl" : "w-[min(520px,46vw)] sm:max-w-[520px]")} data-testid="quran-tafsir-panel">
-        <SheetHeader className="border-b border-border/70 px-5 pb-4 pt-5 text-left sm:px-6">
-          <div className="pr-10 text-[10px] font-extrabold uppercase tracking-[0.16em] text-primary">Tafsir</div>
-          <SheetTitle className="pr-10 text-xl">{reference}</SheetTitle>
+      <SheetContent side={isMobile ? "bottom" : "right"} className={cn("flex flex-col gap-0 overflow-hidden border-border bg-background p-0 data-[state=closed]:duration-150 data-[state=open]:duration-150", isMobile ? "h-[94dvh] rounded-t-2xl" : "w-[min(600px,48vw)] sm:max-w-[600px]")} data-testid="quran-tafsir-panel">
+        <SheetHeader className="border-b border-border/60 px-5 pb-5 pt-6 text-left sm:px-8">
+          <div className="pr-10 text-[10px] font-bold uppercase tracking-[0.17em] text-primary">Tafsir</div>
+          <SheetTitle className="pr-10 text-2xl tracking-[-0.02em]">{reference}</SheetTitle>
           <SheetDescription>{surah.arabicName} · {ayah ? `Ayah ${ayah.ayahNumber}` : "Selected ayah"}</SheetDescription>
-          <div className="pt-2"><label htmlFor="quran-tafsir-source" className="mb-1.5 block text-xs font-semibold text-muted-foreground">Source</label><select id="quran-tafsir-source" value={source.id} onChange={(event) => onSelectedSourceId(Number(event.target.value))} disabled={!sourcesReady} className="h-10 w-full rounded-lg border border-border bg-card px-3 text-sm font-semibold text-foreground outline-none focus:ring-2 focus:ring-ring" data-testid="quran-tafsir-source">{sources.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.language}{item.availability === "offline" ? " · Offline" : ""}</option>)}</select></div>
+          <div className="pt-3"><label htmlFor="quran-tafsir-source" className="mb-1.5 block text-xs font-semibold text-muted-foreground">Source</label><select id="quran-tafsir-source" value={source.id} onChange={(event) => onSelectedSourceId(Number(event.target.value))} disabled={!sourcesReady} className="h-10 w-full rounded-lg border border-border bg-background px-3 text-sm font-medium text-foreground outline-none focus:ring-2 focus:ring-ring" data-testid="quran-tafsir-source">{sources.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.language}{item.availability === "offline" ? " · Offline" : ""}</option>)}</select></div>
         </SheetHeader>
-        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 py-5 sm:px-6" data-testid="quran-tafsir-scroll">
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 py-7 sm:px-8" data-testid="quran-tafsir-scroll">
           {!sourcesReady || loading ? <div className="flex min-h-48 items-center justify-center gap-3 text-sm font-medium text-muted-foreground" role="status"><Loader2 className="h-5 w-5 animate-spin text-primary" /> Loading {source.name}</div> : null}
           {error ? <div className="rounded-xl border border-destructive/25 bg-destructive/5 p-4 text-sm leading-6 text-muted-foreground" role="alert"><p>{error}</p><button type="button" onClick={() => setRetry((value) => value + 1)} className="mt-3 rounded-lg bg-primary px-3 py-2 text-xs font-bold text-primary-foreground">Try again</button></div> : null}
-          {!loading && !error && content ? <div className={cn("whitespace-pre-wrap text-[0.98rem] leading-7 text-foreground", source.direction === "rtl" && "quran-tafsir-arabic text-right text-[1.08rem] leading-8")} dir={source.direction} lang={source.language === "Arabic" ? "ar" : "en"} data-testid="quran-tafsir-content">{content}</div> : null}
+          {!loading && !error && content ? <article className={cn("mx-auto max-w-[34rem] whitespace-pre-wrap text-[1rem] leading-[1.88] text-foreground/90", source.direction === "rtl" && "quran-tafsir-arabic text-right text-[1.12rem] leading-[2]")} dir={source.direction} lang={source.language === "Arabic" ? "ar" : "en"} data-testid="quran-tafsir-content">{content}</article> : null}
         </div>
       </SheetContent>
     </Sheet>
@@ -210,6 +252,7 @@ export function QuranReaderPage() {
   const [currentAyah, setCurrentAyah] = useState(() => Number(params.ayah) || 1);
   const [selectedAyah, setSelectedAyah] = useState<number | null>(null);
   const [tafsirAyah, setTafsirAyah] = useState<number | null>(null);
+  const [displayOpen, setDisplayOpen] = useState(false);
   const [translations, setTranslations] = useState(EMPTY_TRANSLATIONS);
   const [translationLoading, setTranslationLoading] = useState(false);
   const [translationMessage, setTranslationMessage] = useState<string | null>(null);
@@ -309,13 +352,14 @@ export function QuranReaderPage() {
 
   useEffect(() => {
     if (!route || !ayahs.length) return;
+    const topOffset = window.matchMedia("(max-width: 639px)").matches ? 158 : 138;
     const elements = ayahs.map((ayah) => document.getElementById(`ayah-${ayah.ayahNumber}`)).filter((element): element is HTMLElement => Boolean(element));
     const observer = new IntersectionObserver(() => {
       if (initialPositioning.current || layoutObserverSuppressed.current || Date.now() > readingNavigationIntentUntil.current) return;
       const visible = elements
         .map((element) => ({ element, bounds: element.getBoundingClientRect() }))
-        .filter(({ bounds }) => bounds.bottom > 170 && bounds.top < window.innerHeight * 0.55)
-        .toSorted((a, b) => Math.abs(a.bounds.top - 176) - Math.abs(b.bounds.top - 176))[0];
+        .filter(({ bounds }) => bounds.bottom > topOffset && bounds.top < window.innerHeight * 0.55)
+        .toSorted((a, b) => Math.abs(a.bounds.top - (topOffset + 6)) - Math.abs(b.bounds.top - (topOffset + 6)))[0];
       const ayah = Number(visible?.element.dataset.ayah);
       if (!Number.isInteger(ayah) || ayah < 1 || ayah > route.surah.ayahCount) return;
       if (currentAyahRef.current === ayah) return;
@@ -324,7 +368,7 @@ export function QuranReaderPage() {
       internalRouteKey.current = `${route.surah.number}:${ayah}`;
       navigate(`/quran/${route.surah.number}/${ayah}`, { replace: true });
       savePosition(route.surah.number, ayah);
-    }, { rootMargin: "-170px 0px -55% 0px", threshold: [0, 0.2, 0.65] });
+    }, { rootMargin: `-${topOffset}px 0px -55% 0px`, threshold: [0, 0.2, 0.65] });
     elements.forEach((element) => observer.observe(element));
     return () => observer.disconnect();
   }, [ayahs, navigate, route, savePosition]);
@@ -353,19 +397,24 @@ export function QuranReaderPage() {
   const next = corpus.surahs[route.surah.number] ?? null;
   const tafsirTarget = tafsirAyah ? ayahs[tafsirAyah - 1] ?? null : null;
   return (
-    <PageContainer className="max-w-[1120px] pb-14 pt-0">
-      <ReaderHeader surah={route.surah} currentAyah={currentAyah} onJump={jump} translationEnabled={preferences.translationEnabled} translationSource={preferences.translationSource} translationLoading={translationLoading} onToggleTranslation={() => preserveCurrentAyahDuringLayoutChange(() => updatePreferences({ translationEnabled: !preferences.translationEnabled }))} onSelectTranslation={(source) => preserveCurrentAyahDuringLayoutChange(() => updatePreferences({ translationSource: source }))} />
-      {preferences.translationEnabled && translationLoading ? <div className="mx-auto mt-3 flex max-w-[960px] items-center gap-2 px-1 text-xs font-medium text-muted-foreground" role="status"><Loader2 className="h-3.5 w-3.5 animate-spin text-primary" /> Loading {QURAN_TRANSLATION_SOURCES.find((source) => source.id === preferences.translationSource)?.name}</div> : null}
-      {translationMessage ? <p className="mx-auto mt-3 max-w-[960px] px-1 text-xs font-medium text-muted-foreground" role="status">{translationMessage}</p> : null}
-      <div className="mx-auto mt-7 max-w-[960px] overflow-hidden rounded-2xl border border-border/70 bg-card shadow-[0_12px_40px_rgba(15,23,42,0.05)]">
-        <header className="border-b border-border/65 bg-gradient-to-br from-primary/[0.08] via-card to-card px-6 py-8 text-center sm:px-10"><div className="mx-auto flex h-11 w-11 items-center justify-center rounded-xl border border-primary/20 bg-card/80 text-sm font-bold text-primary shadow-sm">{route.surah.number}</div><h2 className="mt-4 text-xl font-bold text-foreground">{route.surah.transliteratedName}</h2><p className="quran-arabic mt-2 text-3xl leading-loose text-foreground" dir="rtl" lang="ar">{route.surah.arabicName}</p><p className="mt-2 text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">{route.surah.revelationType} · {route.surah.ayahCount} ayahs</p>{route.surah.number !== 1 && route.surah.number !== 9 ? <p className="quran-arabic mt-7 text-[1.75rem] leading-[2.2] text-foreground" dir="rtl" lang="ar">{BISMILLAH}</p> : null}</header>
-        <div>{ayahs.map((ayah) => <QuranAyahRow key={ayah.verseKey} ayah={ayah} surah={route.surah} current={currentAyah === ayah.ayahNumber} selected={selectedAyah === ayah.ayahNumber} translationEnabled={preferences.translationEnabled} translation={translations.get(ayah.verseKey) ?? null} translationFontPercent={preferences.translationFontPercent} onSelect={select} onCopy={copy} onOpenTafsir={openTafsir} />)}</div>
-      </div>
-      <nav className="mx-auto mt-5 flex max-w-[960px] items-stretch justify-between gap-3" aria-label="Adjacent Surahs">
-        {previous ? <Link href={`/quran/${previous.number}/1`} className="flex min-h-14 min-w-0 flex-1 items-center gap-3 rounded-xl border border-border/70 bg-card px-4 text-sm font-semibold hover:border-primary/30"><ChevronLeft className="h-4 w-4 shrink-0 text-primary" /><span className="min-w-0"><span className="block text-[10px] uppercase tracking-wide text-muted-foreground">Previous</span><span className="block truncate">{previous.transliteratedName}</span></span></Link> : <span className="flex-1" />}
-        {next ? <Link href={`/quran/${next.number}/1`} className="flex min-h-14 min-w-0 flex-1 items-center justify-end gap-3 rounded-xl border border-border/70 bg-card px-4 text-right text-sm font-semibold hover:border-primary/30"><span className="min-w-0"><span className="block text-[10px] uppercase tracking-wide text-muted-foreground">Next</span><span className="block truncate">{next.transliteratedName}</span></span><ChevronRight className="h-4 w-4 shrink-0 text-primary" /></Link> : <span className="flex-1" />}
+    <PageContainer className="max-w-[1200px] pb-14 pt-0">
+      <ReaderHeader surah={route.surah} currentAyah={currentAyah} onJump={jump} onOpenDisplay={() => setDisplayOpen(true)} />
+      {preferences.translationEnabled && translationLoading ? <div className="mx-auto mt-3 flex max-w-[980px] items-center gap-2 px-2 text-xs font-medium text-muted-foreground" role="status"><Loader2 className="h-3.5 w-3.5 animate-spin text-primary" /> Loading {QURAN_TRANSLATION_SOURCES.find((source) => source.id === preferences.translationSource)?.name}</div> : null}
+      {translationMessage ? <p className="mx-auto mt-3 max-w-[980px] px-2 text-xs font-medium text-muted-foreground" role="status">{translationMessage}</p> : null}
+      <main className="mx-auto max-w-[980px]" data-testid="quran-reading-column">
+        <header className="border-b border-border/60 px-3 py-8 text-center sm:py-10">
+          <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-muted-foreground">Surah {route.surah.number}</p>
+          <div className="mt-2 flex items-baseline justify-center gap-3"><h2 className="text-xl font-semibold tracking-[-0.02em] text-foreground">{route.surah.transliteratedName}</h2><p className="quran-arabic text-2xl text-foreground" dir="rtl" lang="ar">{route.surah.arabicName}</p></div>
+          <p className="mt-1 text-xs text-muted-foreground">{route.surah.revelationType} · {route.surah.ayahCount} ayat</p>
+          {route.surah.number !== 1 && route.surah.number !== 9 ? <p className="quran-arabic mt-6 text-[1.65rem] leading-[2] text-foreground" dir="rtl" lang="ar">{BISMILLAH}</p> : null}
+        </header>
+        <div>{ayahs.map((ayah) => <QuranAyahRow key={ayah.verseKey} ayah={ayah} surah={route.surah} current={currentAyah === ayah.ayahNumber} selected={selectedAyah === ayah.ayahNumber} translationEnabled={preferences.translationEnabled} translation={translations.get(ayah.verseKey) ?? null} arabicFontPercent={preferences.arabicFontPercent} translationFontPercent={preferences.translationFontPercent} onSelect={select} onCopy={copy} onOpenTafsir={openTafsir} />)}</div>
+      </main>
+      <nav className="mx-auto mt-6 flex max-w-[980px] items-center justify-between gap-3 border-t border-border/60 pt-4" aria-label="Adjacent Surahs">
+        {previous ? <Link href={`/quran/${previous.number}/1`} className="flex min-h-11 min-w-0 flex-1 items-center gap-2 rounded-lg px-2 text-sm font-semibold transition-colors hover:bg-muted"><ChevronLeft className="h-4 w-4 shrink-0 text-muted-foreground" /><span className="min-w-0"><span className="block text-[9px] uppercase tracking-[0.13em] text-muted-foreground">Previous Surah</span><span className="block truncate">{previous.transliteratedName}</span></span></Link> : <span className="flex-1" />}
+        {next ? <Link href={`/quran/${next.number}/1`} className="flex min-h-11 min-w-0 flex-1 items-center justify-end gap-2 rounded-lg px-2 text-right text-sm font-semibold transition-colors hover:bg-muted"><span className="min-w-0"><span className="block text-[9px] uppercase tracking-[0.13em] text-muted-foreground">Next Surah</span><span className="block truncate">{next.transliteratedName}</span></span><ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" /></Link> : <span className="flex-1" />}
       </nav>
-      <div className="mx-auto mt-4 flex max-w-[960px] items-center justify-center gap-2 text-xs text-muted-foreground"><ArrowRight className="h-3.5 w-3.5" /> The address updates to the exact ayah as you read.</div>
+      <QuranDisplayPanel open={displayOpen} onOpenChange={setDisplayOpen} arabicFontPercent={preferences.arabicFontPercent} translationEnabled={preferences.translationEnabled} translationSource={preferences.translationSource} translationLoading={translationLoading} tafsirSourceId={preferences.tafsirSourceId} onArabicFontPercent={(percent) => preserveCurrentAyahDuringLayoutChange(() => updatePreferences({ arabicFontPercent: percent }))} onToggleTranslation={() => preserveCurrentAyahDuringLayoutChange(() => updatePreferences({ translationEnabled: !preferences.translationEnabled }))} onSelectTranslation={(source) => preserveCurrentAyahDuringLayoutChange(() => updatePreferences({ translationSource: source }))} onSelectTafsir={selectTafsirSource} />
       <TafsirPanel open={Boolean(tafsirTarget)} ayah={tafsirTarget} surah={route.surah} selectedSourceId={preferences.tafsirSourceId} onSelectedSourceId={selectTafsirSource} onOpenChange={(open) => { if (!open) setTafsirAyah(null); }} />
     </PageContainer>
   );

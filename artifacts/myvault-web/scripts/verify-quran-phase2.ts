@@ -27,11 +27,13 @@ import {
 } from "../src/lib/quran/quranSupplementalData";
 
 const appRoot = fileURLToPath(new URL("../", import.meta.url));
-const [metadataBytes, sahihBytes, maududiBytes, tafsirBytes] = await Promise.all([
+const [metadataBytes, sahihBytes, maududiBytes, tafsirBytes, indexSourceBytes, readerSourceBytes] = await Promise.all([
   readFile(`${appRoot}public/quran/quran-data.xml`),
   readFile(`${appRoot}public/quran/Sahih_international.json`),
   readFile(`${appRoot}public/quran/Maududi_en_tanzil.txt`),
   readFile(`${appRoot}public/quran/abridged_tafsir.json`),
+  readFile(`${appRoot}src/pages/quran.tsx`),
+  readFile(`${appRoot}src/components/quran/quran-reader.tsx`),
 ]);
 const sha256 = (value: Uint8Array) => createHash("sha256").update(value).digest("hex");
 assert.equal(sha256(sahihBytes), "77f30d1b920695be640858383c786f0b4b77ff457c0693b8be91eb65b485861c");
@@ -92,12 +94,13 @@ assert.equal(quranCopyPayload("reference", { arabicText: "اللَّهُ", trans
 assert.equal(quranCopyPayload("translation", { arabicText: "اللَّهُ", translation: entry, reference }), entry?.text);
 
 const restored = parseQuranReaderPreferences({
+  quranArabicFontPercent: 130,
   quranTranslationEnabled: false,
   quranTranslationSource: "maududi",
   quranTranslationFontPercent: 125,
   quranTafsirSourceId: 169,
 }, false);
-assert.deepEqual(restored, { schemaVersion: 1, translationEnabled: false, translationSource: "maududi", translationFontPercent: 125, tafsirSourceId: 169 });
+assert.deepEqual(restored, { schemaVersion: 1, arabicFontPercent: 130, translationEnabled: false, translationSource: "maududi", translationFontPercent: 125, tafsirSourceId: 169 });
 
 const values = new Map<string, string>();
 globalThis.localStorage = {
@@ -109,11 +112,12 @@ globalThis.localStorage = {
   setItem: (key, value) => { values.set(key, value); },
 };
 setActiveGoogleAccount("account-one");
-saveQuranReaderPreferences({ schemaVersion: 1, translationEnabled: false, translationSource: "maududi", translationFontPercent: 110, tafsirSourceId: 169 });
+saveQuranReaderPreferences({ schemaVersion: 1, arabicFontPercent: 120, translationEnabled: false, translationSource: "maududi", translationFontPercent: 110, tafsirSourceId: 169 });
 setActiveGoogleAccount("account-two");
-saveQuranReaderPreferences({ schemaVersion: 1, translationEnabled: true, translationSource: "sahih_international", translationFontPercent: 90, tafsirSourceId: -1 });
+saveQuranReaderPreferences({ schemaVersion: 1, arabicFontPercent: 90, translationEnabled: true, translationSource: "sahih_international", translationFontPercent: 90, tafsirSourceId: -1 });
 assert.notEqual(quranReaderPreferencesStorageKey("account-one"), quranReaderPreferencesStorageKey("account-two"));
 assert.equal(readLocalQuranReaderPreferences("account-one")?.translationSource, "maududi");
+assert.equal(readLocalQuranReaderPreferences("account-one")?.arabicFontPercent, 120);
 assert.equal(readLocalQuranReaderPreferences("account-one")?.tafsirSourceId, 169);
 assert.equal(readLocalQuranReaderPreferences("account-two")?.translationSource, "sahih_international");
 clearActiveGoogleAccount();
@@ -124,4 +128,14 @@ const beforeTafsir = safeQuranRoute(surahs, "2", "255");
 assert.equal(beforeTafsir?.ayahNumber, 255);
 assert.deepEqual(safeQuranRoute(surahs, "2", "255"), beforeTafsir);
 
-console.log("Quran Phase 2 verified: exact Android translation/Tafsir assets, mapping, selection, copy actions, footnotes, source switching, account isolation, and preserved deep links.");
+const indexSource = indexSourceBytes.toString("utf8");
+const readerSource = readerSourceBytes.toString("utf8");
+assert.match(indexSource, /md:grid-cols-2/, "Surah index must become two compact columns on wider screens");
+assert.match(indexSource, /border-b border-border\/65/, "Surah entries must use compact divided rows");
+assert.doesNotMatch(indexSource, /rounded-2xl.*quran-surah/s, "Surahs must not return to giant cards");
+assert.match(readerSource, /arabicFontPercent/, "Arabic font size preference must reach the reading surface");
+assert.match(readerSource, /selected && .*inset_2px_0_0/, "Selected ayahs must use a restrained accent edge");
+assert.match(readerSource, /current \? .*Last read/s, "Last-read treatment must remain separate from selection");
+assert.match(readerSource, /isMobile \? "bottom" : "right"/, "Display and Tafsir panels must adapt to mobile and desktop");
+
+console.log("Quran Phase 2.5 verified: exact Android assets and mappings, compact responsive rows, Arabic sizing, distinct selection/last-read states, account isolation, and preserved deep links.");
