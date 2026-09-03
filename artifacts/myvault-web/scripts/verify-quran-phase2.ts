@@ -100,7 +100,7 @@ const restored = parseQuranReaderPreferences({
   quranTranslationFontPercent: 125,
   quranTafsirSourceId: 169,
 }, false);
-assert.deepEqual(restored, { schemaVersion: 1, arabicFontPercent: 130, translationEnabled: false, translationSource: "maududi", translationFontPercent: 125, tafsirSourceId: 169 });
+assert.deepEqual(restored, { schemaVersion: 1, arabicFontPercent: 130, audioReciterId: 0, translationEnabled: false, translationSource: "maududi", translationFontPercent: 125, tafsirSourceId: 169 });
 
 const values = new Map<string, string>();
 globalThis.localStorage = {
@@ -112,9 +112,9 @@ globalThis.localStorage = {
   setItem: (key, value) => { values.set(key, value); },
 };
 setActiveGoogleAccount("account-one");
-saveQuranReaderPreferences({ schemaVersion: 1, arabicFontPercent: 120, translationEnabled: false, translationSource: "maududi", translationFontPercent: 110, tafsirSourceId: 169 });
+saveQuranReaderPreferences({ schemaVersion: 1, arabicFontPercent: 120, audioReciterId: 7, translationEnabled: false, translationSource: "maududi", translationFontPercent: 110, tafsirSourceId: 169 });
 setActiveGoogleAccount("account-two");
-saveQuranReaderPreferences({ schemaVersion: 1, arabicFontPercent: 90, translationEnabled: true, translationSource: "sahih_international", translationFontPercent: 90, tafsirSourceId: -1 });
+saveQuranReaderPreferences({ schemaVersion: 1, arabicFontPercent: 90, audioReciterId: 3, translationEnabled: true, translationSource: "sahih_international", translationFontPercent: 90, tafsirSourceId: -1 });
 assert.notEqual(quranReaderPreferencesStorageKey("account-one"), quranReaderPreferencesStorageKey("account-two"));
 assert.equal(readLocalQuranReaderPreferences("account-one")?.translationSource, "maududi");
 assert.equal(readLocalQuranReaderPreferences("account-one")?.arabicFontPercent, 120);

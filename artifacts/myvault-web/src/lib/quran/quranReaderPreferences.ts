@@ -5,6 +5,7 @@ import type { QuranTranslationSourceId } from "@/lib/quran/quranSupplementalData
 export type QuranReaderPreferences = {
   schemaVersion: 1;
   arabicFontPercent: number;
+  audioReciterId: number;
   translationEnabled: boolean;
   translationSource: QuranTranslationSourceId;
   translationFontPercent: number;
@@ -14,6 +15,7 @@ export type QuranReaderPreferences = {
 export const DEFAULT_QURAN_READER_PREFERENCES: QuranReaderPreferences = {
   schemaVersion: 1,
   arabicFontPercent: 100,
+  audioReciterId: 0,
   translationEnabled: true,
   translationSource: "sahih_international",
   translationFontPercent: 100,
@@ -50,6 +52,11 @@ export function parseQuranReaderPreferences(value: unknown, requireSchemaVersion
   return {
     schemaVersion: 1,
     arabicFontPercent: safeArabicFontPercent(record.arabicFontPercent ?? record.quranArabicFontPercent),
+    audioReciterId: typeof (record.audioReciterId ?? record.quranAudioReciterId) === "number"
+      && Number.isInteger(record.audioReciterId ?? record.quranAudioReciterId)
+      && Number(record.audioReciterId ?? record.quranAudioReciterId) >= 0
+      ? Number(record.audioReciterId ?? record.quranAudioReciterId)
+      : 0,
     translationEnabled: typeof record.translationEnabled === "boolean"
       ? record.translationEnabled
       : typeof record.quranTranslationEnabled === "boolean"
