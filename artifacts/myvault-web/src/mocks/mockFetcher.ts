@@ -71,14 +71,17 @@ function mergeById<T extends { id: string }>(base: T[], local: T[]) {
 
 export function installMockFetcher(): void {
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-    const url = typeof input === "string" ? input : input instanceof URL ? input.pathname + input.search : (input as Request).url;
+    const rawUrl = typeof input === "string" ? input : input instanceof URL ? input.href : (input as Request).url;
+    const resolvedUrl = new URL(rawUrl, window.location.href);
+    const isApiPath = resolvedUrl.pathname === "/api" || resolvedUrl.pathname.startsWith("/api/");
+    if (resolvedUrl.origin !== window.location.origin || !isApiPath) {
+      return originalFetch(input, init);
+    }
+    const url = resolvedUrl.pathname + resolvedUrl.search;
     const method = (init?.method ?? "GET").toUpperCase();
 
     // Only intercept /api/* calls
-    const path = url.replace(/^.*?\/api/, "/api");
-    if (!path.startsWith("/api")) {
-      return originalFetch(input, init);
-    }
+    const path = url;
     if (path.replace(/\?.*/, "") === "/api/google-drive-auth") {
       return originalFetch(input, init);
     }
