@@ -3,6 +3,25 @@
 @import "tw-animate-css";
 @plugin "@tailwindcss/typography";
 
+@font-face {
+  font-family: "MyVault Uthmani Hafs";
+  src: url("/fonts/uthmani_hafs.ttf") format("truetype");
+  font-display: swap;
+  font-style: normal;
+  font-weight: 400;
+}
+
+.quran-arabic {
+  font-family: "MyVault Uthmani Hafs", "Noto Naskh Arabic", serif;
+  font-weight: 400;
+  text-rendering: optimizeLegibility;
+}
+
+.quran-ayah {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 245px;
+}
+
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {

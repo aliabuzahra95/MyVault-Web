@@ -13,7 +13,7 @@ import FolderDetailPage from "@/pages/folder-detail";
 import NoteDetailPage from "@/pages/note-detail";
 import LibraryPage from "@/pages/library";
 import LibraryDocumentPage from "@/pages/library-document";
-import QuranPage from "@/pages/quran";
+import QuranPage, { QuranReaderPage } from "@/pages/quran";
 import SearchPage from "@/pages/search";
 import TagsPage from "@/pages/tags";
 import KnowledgeTagsPage from "@/pages/knowledge-tags";
@@ -56,6 +56,7 @@ function Router() {
         <Route path="/courses" component={CoursesPage} />
         <Route path="/study" component={FoldersPage} />
         <Route path="/study/:id" component={FolderDetailPage} />
+        <Route path="/quran/:surah/:ayah" component={QuranReaderPage} />
         <Route path="/quran" component={QuranPage} />
         <Route path="/folders" component={FoldersPage} />
         <Route path="/folders/:id" component={FolderDetailPage} />

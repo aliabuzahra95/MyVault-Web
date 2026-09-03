@@ -317,7 +317,7 @@ export function resolveActiveNodeKey(model: KnowledgeTreeModel, location: string
     return folderId ? model.libraryFolderKeys.get(folderId) ?? LIBRARY_SECTION_KEY : LIBRARY_SECTION_KEY;
   }
   if (path === "/courses") return COURSES_SECTION_KEY;
-  if (path === "/quran") return QURAN_SECTION_KEY;
+  if (path === "/quran" || path.startsWith("/quran/")) return QURAN_SECTION_KEY;
   return null;
 }
 

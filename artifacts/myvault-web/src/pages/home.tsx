@@ -7,7 +7,6 @@ import {
   FileText,
   Folder,
   Library,
-  Lock,
   MoreVertical,
   SquarePen,
 } from "lucide-react";
@@ -18,6 +17,8 @@ import { PageContainer, PageHeader } from "@/components/page-layout";
 import { cn } from "@/lib/utils";
 import { useWorkspace } from "@/lib/providers";
 import { orderByRecentActivity, recordRecentActivity } from "@/lib/recentActivity";
+import { useQuranReadingPosition } from "@/hooks/useQuranReadingPosition";
+import type { QuranReadingPosition } from "@/lib/quran/quranReadingState";
 
 type DashboardCourse = {
   id: string;
@@ -209,7 +210,7 @@ function StudyRows({ rows, onOpenNote, onViewAll }: { rows: DashboardNote[]; onO
   );
 }
 
-function QuranPanel() {
+function QuranPanel({ position, onOpen }: { position: QuranReadingPosition | null; onOpen: () => void }) {
   return (
     <Panel>
       <PanelHeader icon={Library} title="Quran" action="" />
@@ -218,11 +219,13 @@ function QuranPanel() {
           <img src={quranMedallion} alt="" className="h-[116px] w-[116px] shrink-0 rounded-full object-cover" />
           <div className="min-w-0">
             <h3 className="text-base font-bold text-slate-950">Quran Reader</h3>
-            <p className="mt-2 text-sm font-medium text-slate-500">Coming soon to the web.</p>
-            <p className="mt-1 max-w-[260px] text-sm leading-5 text-slate-600">Access and read the Quran directly in MyVault Islamic Corpus Web.</p>
-            <button className="mt-4 inline-flex h-9 items-center justify-center gap-2 rounded-md border border-slate-200 bg-white px-4 text-sm font-bold text-slate-700">
-              <Lock className="h-4 w-4" />
-              Coming Soon
+            <p className="mt-2 text-sm font-medium text-slate-500">
+              {position ? `Last read at ${position.surahNumber}:${position.ayahNumber}` : "All 114 Surahs are ready to read."}
+            </p>
+            <p className="mt-1 max-w-[280px] text-sm leading-5 text-slate-600">Read the complete Uthmani Hafs text and return to your exact ayah.</p>
+            <button type="button" onClick={onOpen} className="mt-4 inline-flex h-9 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-bold text-primary-foreground shadow-sm hover:opacity-90">
+              <BookOpen className="h-4 w-4" />
+              {position ? "Continue reading" : "Open Quran"}
             </button>
           </div>
         </div>
@@ -242,6 +245,7 @@ function PanelFooter({ label, onClick }: { label: string; onClick?: () => void }
 
 export default function HomePage() {
   const [, navigate] = useLocation();
+  const { position: quranPosition } = useQuranReadingPosition();
   const { workspace } = useWorkspace();
   const { corpus } = useRestoredCorpus();
   const { changes: localCourseChanges } = useLocalCourseChanges();
@@ -303,7 +307,10 @@ export default function HomePage() {
         />
         <LibraryRows rows={dashboardDocuments} onOpenDocument={(documentId) => navigate(`/library/document/${documentId}`)} onViewAll={() => navigate("/library")} />
         <StudyRows rows={dashboardNotes} onOpenNote={(noteId) => navigate(`/notes/${noteId}`)} onViewAll={() => navigate("/study")} />
-        <QuranPanel />
+        <QuranPanel
+          position={quranPosition}
+          onOpen={() => navigate(quranPosition ? `/quran/${quranPosition.surahNumber}/${quranPosition.ayahNumber}` : "/quran")}
+        />
       </section>
     </PageContainer>
   );
