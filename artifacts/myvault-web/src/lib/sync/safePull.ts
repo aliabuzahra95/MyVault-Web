@@ -5,7 +5,8 @@ import {
   loadLocalSyncBase,
   loadPendingLocalSyncOperations,
   recoverUnsafelyRebasedLegacyNoteDrafts,
-  rebaseLocalNoteDraftsAfterSafePull,
+  loadLocalVaultGeneration,
+  loadVerifiedWebPublication,
   saveLocalSyncConflict,
   type LocalSyncBase,
 } from "@/lib/restore/localRestoreStore";
@@ -43,6 +44,7 @@ export type SafePullResult = {
   reconciledOperationIds: string[];
   reconciledPendingChanges: SyncPendingChanges;
   reconciledPreflight: SyncPreflight | null;
+  localGeneration: number;
 };
 
 function recordNoteId(value: unknown) {
@@ -101,20 +103,30 @@ export async function applyIncomingDriveBundleSafely(
   nextBase: LocalSyncBase,
   allowRecoveredCopy = true,
 ): Promise<SafePullResult> {
-  const existingBase = await loadLocalSyncBase();
+  let existingBase = await loadLocalSyncBase();
+  const publication = await loadVerifiedWebPublication();
+  if (publication?.base.accountId === nextBase.accountId && publication.previousBaseRevisionId === (existingBase?.revision.revisionId ?? null)) {
+    // This is our own read-back-verified publication, not an inferred remote
+    // ancestor. Later browser edits descend from that uploaded local snapshot.
+    const generation = await loadLocalVaultGeneration();
+    await applyMetadataRestorePreservingLocalChangesAtomically(publication.base.bundle, publication.base, generation);
+    existingBase = publication.base;
+  }
   if (existingBase?.accountId === nextBase.accountId) {
     await recoverUnsafelyRebasedLegacyNoteDrafts(existingBase);
   }
+  const generation = await loadLocalVaultGeneration();
   const [pending, operations] = await Promise.all([
     loadSyncPendingChanges(),
     loadPendingLocalSyncOperations(),
   ]);
+  if (await loadLocalVaultGeneration() !== generation) throw new SafePullBlockedError(["Website changes arrived during reconciliation. The incoming backup is staged; try again after saving."]);
   const pendingCount = Object.entries(pending)
     .filter(([key]) => key !== "attachmentBlobs")
     .reduce((total, [, value]) => total + (Array.isArray(value) ? value.length : 0), 0);
 
   if (pendingCount === 0 && operations.length === 0) {
-    const result = await applyMetadataRestorePreservingLocalChangesAtomically(incoming, nextBase);
+    const result = await applyMetadataRestorePreservingLocalChangesAtomically(incoming, nextBase, generation);
     return {
       ...result,
       mergedRemoteChanges: 0,
@@ -162,8 +174,7 @@ export async function applyIncomingDriveBundleSafely(
     throw new SafePullConflictError(merge.conflicts);
   }
 
-  const result = await applyMetadataRestorePreservingLocalChangesAtomically(incoming, nextBase);
-  await rebaseLocalNoteDraftsAfterSafePull(incoming, nextBase.revision.revisionId);
+  const result = await applyMetadataRestorePreservingLocalChangesAtomically(incoming, nextBase, generation);
   return {
     ...result,
     mergedRemoteChanges: merge.remoteEntityCount + merge.mergedEntityCount,

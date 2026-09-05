@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useParams } from "wouter";
 import {
   getGetNoteQueryKey,
@@ -21,6 +21,8 @@ import {
   type VaultRichTextDocument,
 } from "@/lib/restore/vaultRichText";
 import { recordRecentActivity } from "@/lib/recentActivity";
+import { getActiveAccountId } from "@/lib/sync/accountContext";
+import { acquireNoteEditorLease, retainFailedEditorSave } from "@/lib/sync/editorLease";
 
 const emptyDocument: VaultRichTextDocument = { text: "", styleMarks: [], noteLinks: [] };
 
@@ -33,6 +35,11 @@ function draftSignature(draft: LocalNoteDraft) {
 }
 
 export default function NoteDetailPage() {
+  const { id } = useParams<{ id: string }>();
+  return <NoteEditor key={`${getActiveAccountId()}:${id}`} />;
+}
+
+function NoteEditor() {
   const { id, courseId } = useParams<{ id: string; courseId?: string }>();
   const [, navigate] = useLocation();
   const [document, setDocument] = useState<VaultRichTextDocument>(emptyDocument);
@@ -50,23 +57,65 @@ export default function NoteDetailPage() {
   const latestDraft = useRef<LocalNoteDraft | null>(null);
   const lastSavedSignature = useRef("");
   const saveRevision = useRef(0);
+  const [accountId] = useState(getActiveAccountId);
+  const [leaseReady, setLeaseReady] = useState(false);
+  const saveQueue = useRef(Promise.resolve());
+
+  function persistDraft(draft: LocalNoteDraft) {
+    const saving = saveQueue.current.catch(() => undefined).then(() => saveLocalNoteDraft(draft, accountId));
+    saveQueue.current = saving;
+    return saving;
+  }
+
+  useEffect(() => {
+    let cancelled = false;
+    let release: (() => void) | undefined;
+    void acquireNoteEditorLease(accountId).then((unlock) => {
+      if (cancelled) { unlock(); return; }
+      release = unlock;
+      setLeaseReady(true);
+    }).catch(() => setSaveStatus("error"));
+    return () => {
+      cancelled = true;
+      if (saveTimer.current) clearTimeout(saveTimer.current);
+      const pending = latestDraft.current;
+      const flush = pending && draftSignature(pending) !== lastSavedSignature.current
+        ? persistDraft({ ...pending, savedAt: Date.now() }) : saveQueue.current;
+      // Keep the editor lease until its last autosave is durably committed.
+      void flush.then(() => release?.(), () => {
+        // A failed save must not permit a restore to replace this editor's base.
+        if (pending) retainFailedEditorSave(accountId, pending, release);
+      });
+    };
+  }, [accountId]);
+
+  useEffect(() => {
+    const warnBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (latestDraft.current && draftSignature(latestDraft.current) !== lastSavedSignature.current) {
+        event.preventDefault();
+        event.returnValue = "";
+      }
+    };
+    window.addEventListener("beforeunload", warnBeforeUnload);
+    return () => window.removeEventListener("beforeunload", warnBeforeUnload);
+  }, []);
 
   const { data: note, isLoading } = useGetNote(id!, {
     query: {
-      enabled: Boolean(id),
-      queryKey: getGetNoteQueryKey(id!),
+      enabled: Boolean(id) && leaseReady,
+      queryKey: [...getGetNoteQueryKey(id!), accountId],
     },
   });
 
   const { data: versions = [] } = useListNoteVersions(id!, {
     query: {
-      enabled: Boolean(id),
-      queryKey: getListNoteVersionsQueryKey(id!),
+      enabled: Boolean(id) && leaseReady,
+      queryKey: [...getListNoteVersionsQueryKey(id!), accountId],
     },
   });
 
   useEffect(() => {
-    if (!note || !id || initializedNoteId.current === id) return;
+    if (!leaseReady || !note || !id || initializedNoteId.current === id) return;
     initializedNoteId.current = id;
     editorReady.current = false;
     setLoadedNoteId(null);
@@ -126,7 +175,7 @@ export default function NoteDetailPage() {
     return () => {
       cancelled = true;
     };
-  }, [id, note]);
+  }, [id, note, leaseReady]);
 
   useEffect(() => {
     if (id && note && loadedNoteId === id) recordRecentActivity("note", id);
@@ -150,7 +199,7 @@ export default function NoteDetailPage() {
     };
   }, [document, id, isPinned, note, savedAt, title]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!draft || !editorReady.current) return;
     latestDraft.current = draft;
     const signature = draftSignature(draft);
@@ -162,7 +211,7 @@ export default function NoteDetailPage() {
     saveTimer.current = setTimeout(() => {
       const timestamp = Date.now();
       const savedDraft = { ...draft, savedAt: timestamp };
-      void saveLocalNoteDraft(savedDraft)
+      void persistDraft(savedDraft)
         .then(() => {
           if (revision !== saveRevision.current) return;
           latestDraft.current = savedDraft;
@@ -179,13 +228,6 @@ export default function NoteDetailPage() {
       if (saveTimer.current) clearTimeout(saveTimer.current);
     };
   }, [draft]);
-
-  useEffect(() => () => {
-    const pendingDraft = latestDraft.current;
-    if (pendingDraft && draftSignature(pendingDraft) !== lastSavedSignature.current) {
-      void saveLocalNoteDraft({ ...pendingDraft, savedAt: Date.now() });
-    }
-  }, [id]);
 
   if (isLoading || loadedNoteId !== id) {
     return (

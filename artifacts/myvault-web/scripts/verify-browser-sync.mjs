@@ -373,7 +373,8 @@ try {
       baseCloudVersion: (await store.loadLocalSyncBase())?.bundle.cloudVersion,
     };
   }, { accountA, bundleA });
-  assert.deepEqual(cleanRestore.result, { preservedLocalChanges: false, preservedExistingBase: false });
+  assert.deepEqual({ preservedLocalChanges: cleanRestore.result.preservedLocalChanges, preservedExistingBase: cleanRestore.result.preservedExistingBase }, { preservedLocalChanges: false, preservedExistingBase: false });
+  assert.ok(cleanRestore.result.localGeneration > 0, "The atomic apply must advance the local generation.");
   assert.equal(cleanRestore.baseCloudVersion, bundleA.cloudVersion + 2, "A clean restore must advance the sync base.");
 
   await Promise.all([firstPage, secondPage].map((page) => page.evaluate(async (accountId) => {
@@ -475,6 +476,9 @@ try {
   let driveSequence = 0;
   let mockPermissionId = "permission-account-c";
   let corruptReadbackName = null;
+  let losePublicationResponse = false;
+  let deleteRequests = 0;
+  let beforePublication = null;
   const folderMimeType = "application/vnd.google-apps.folder";
   const publicRecord = (file) => ({
     id: file.id,
@@ -554,6 +558,7 @@ try {
     }
     const uploadFileId = path.match(/^\/upload\/drive\/v3\/files\/([^/]+)$/)?.[1];
     if (uploadFileId && request.method() === "PATCH") {
+      if (beforePublication) { const callback = beforePublication; beforePublication = null; await callback(); }
       const file = driveFiles.get(decodeURIComponent(uploadFileId));
       if (!file) {
         await route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ error: "not found" }) });
@@ -562,6 +567,11 @@ try {
       file.bytes = request.postDataBuffer() ?? Buffer.alloc(0);
       file.modifiedTime = new Date(1_780_000_000_000 + ++driveSequence).toISOString();
       uploadOrder.push(file.name);
+      if (file.name === "sync_manifest.json" && losePublicationResponse) {
+        losePublicationResponse = false;
+        await route.abort("failed");
+        return;
+      }
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(publicRecord(file)) });
       return;
     }
@@ -574,6 +584,7 @@ try {
       return;
     }
     if (fileId && request.method() === "DELETE") {
+      deleteRequests += 1;
       driveFiles.delete(decodeURIComponent(fileId));
       await route.fulfill({ status: 204, body: "" });
       return;
@@ -699,6 +710,9 @@ try {
   const notesFile = driveFiles.get(notesEntry.cloudFileId);
   assert.ok(JSON.parse(notesFile.bytes.toString("utf8")).some((note) => note.id === "web-first-note"));
 
+  const originalBytes = new Map(committedManifest.entries.map((entry) => [entry.cloudFileId, Buffer.from(driveFiles.get(entry.cloudFileId).bytes)]));
+  const manifestWriteCount = uploadOrder.filter((name) => name === "sync_manifest.json").length;
+  losePublicationResponse = true;
   const existingNoteCommit = await firstPage.evaluate(async (accountId) => {
     const store = await import("/src/lib/restore/localRestoreStore.ts");
     const writeBack = await import("/src/lib/sync/driveWriteBack.ts");
@@ -761,6 +775,9 @@ try {
   assert.equal(existingNoteCommit.result.status, "uploaded", "An edit to a note already present on Web and Android must upload.");
   assert.equal(existingNoteCommit.pendingOperations, 0);
   const editedManifestFile = [...driveFiles.values()].filter((file) => file.name === "sync_manifest.json").toSorted((a, b) => b.modifiedTime.localeCompare(a.modifiedTime))[0];
+  assert.equal(uploadOrder.filter((name) => name === "sync_manifest.json").length, manifestWriteCount + 1, "A lost final response must be recovered by reading, not another manifest write.");
+  for (const [id, bytes] of originalBytes) assert.deepEqual(driveFiles.get(id).bytes, bytes, "Backup A objects remain unchanged after B publishes.");
+  assert.equal(deleteRequests, 0, "The writer must never delete Drive objects.");
   const editedManifest = JSON.parse(editedManifestFile.bytes.toString("utf8"));
   const editedNotesEntry = editedManifest.entries.find((entry) => entry.fileName === "notes.json");
   const editedBlocksEntry = editedManifest.entries.find((entry) => entry.fileName === "blocks.json");
@@ -773,6 +790,36 @@ try {
   assert.equal(JSON.parse(editedBlocks.find((block) => block.noteId === "web-first-note" && block.type === "rich_text")?.content).text, "An existing note now has an updated body.");
   assert.equal(JSON.parse(editedBlocks.find((block) => block.noteId === "new-note-after-restore" && block.type === "rich_text")?.content).text, "This note is added in the same backup as existing edits.");
   assert.equal(editedFolders.find((folder) => folder.id === "web-first-folder")?.name, "Existing folder renamed after restore");
+
+  await firstPage.evaluate(async () => {
+    const store = await import("/src/lib/restore/localRestoreStore.ts");
+    const base = await store.loadLocalSyncBase();
+    const note = base.bundle.files.find((file) => file.fileName === "notes.json").json.find((item) => item.id === "web-first-note");
+    await store.saveLocalNoteDraft({ schemaVersion: 1, noteId: note.id, title: note.title, baseCloudVersion: base.bundle.cloudVersion, baseUpdatedAt: note.updatedAt, baseRevisionId: base.revision.revisionId, mode: "rich_text", richTextDocument: { text: "Snapshot B", styleMarks: [], noteLinks: [] }, blocks: [], isPinned: false, savedAt: Date.now(), pendingDriveSync: true });
+  });
+  beforePublication = () => firstPage.evaluate(async () => {
+    const store = await import("/src/lib/restore/localRestoreStore.ts");
+    const draft = await store.loadLocalNoteDraft("web-first-note");
+    await store.saveLocalNoteDraft({ ...draft, richTextDocument: { ...draft.richTextDocument, text: "Snapshot B plus later edit C" }, savedAt: Date.now() });
+  });
+  const laterEdit = await firstPage.evaluate(async () => {
+    const store = await import("/src/lib/restore/localRestoreStore.ts");
+    const writer = await import("/src/lib/sync/driveWriteBack.ts");
+    const first = await writer.writeWebsiteChangesToDrive({ accessToken: "mock-token" });
+    const retained = await store.loadLocalNoteDraft("web-first-note");
+    const pendingCount = (await store.loadPendingLocalSyncOperations()).length;
+    const second = await writer.writeWebsiteChangesToDrive({ accessToken: "mock-token" });
+    const base = await store.loadLocalSyncBase();
+    const blocks = base.bundle.files.find((file) => file.fileName === "blocks.json").json;
+    return { first, second, retained: retained.richTextDocument.text, pendingCount, finalText: JSON.parse(blocks.find((block) => block.noteId === "web-first-note" && block.type === "rich_text").content).text, conflicts: (await store.loadLocalSyncConflicts()).length, remaining: (await store.loadPendingLocalSyncOperations()).length };
+  });
+  assert.equal(laterEdit.first.localStateUpdated, false);
+  assert.ok(laterEdit.pendingCount > 0);
+  assert.equal(laterEdit.retained, "Snapshot B plus later edit C");
+  assert.equal(laterEdit.second.status, "uploaded");
+  assert.equal(laterEdit.finalText, "Snapshot B plus later edit C");
+  assert.equal(laterEdit.conflicts, 0, "A later edit must not conflict with this browser's own verified publication.");
+  assert.equal(laterEdit.remaining, 0);
 
   await firstPage.evaluate(async () => {
     const store = await import("/src/lib/restore/localRestoreStore.ts");
@@ -883,6 +930,7 @@ try {
   assert.equal(failedCommit.folders.some((folder) => folder.id === "failure-folder"), true);
   assert.equal([...driveFiles.values()].some((file) => file.name === "sync_manifest.json"), false, "A failed staged upload must never commit a manifest.");
   corruptReadbackName = null;
+  assert.equal(deleteRequests, 0, "Failure recovery must retain every staging object.");
 
   console.log("Browser sync contract verified: account isolation, locking, offline journalling, manifest-last commit, and failed-upload recovery all passed.");
 } finally {

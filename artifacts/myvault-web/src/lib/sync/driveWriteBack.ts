@@ -1,7 +1,6 @@
 import {
   createDriveFile,
   createDriveFolder,
-  deleteDriveFile,
   downloadDriveFileBlob,
   downloadDriveFileJson,
   findMyVaultDriveMap,
@@ -12,15 +11,16 @@ import {
 } from "@/lib/googleDrive/driveClient";
 import { buildMetadataRestoreBundle, type MetadataRestoreBundle } from "@/lib/restore/metadataRestore";
 import {
-  clearLocalSyncPendingChanges,
   createLocalRecoverySnapshot,
   loadLocalAttachmentBlob,
   loadLocalSyncBase,
   loadPendingLocalSyncOperations,
   loadMetadataRestoreBundle,
   reconcileLocalNoteDrafts,
-  saveLocalSyncBase,
-  saveMetadataRestoreBundle,
+  loadLocalVaultGeneration,
+  settlePublishedDriveBundle,
+  rememberVerifiedWebPublication,
+  stageIncomingDriveBundle,
 } from "@/lib/restore/localRestoreStore";
 import {
   parseDriveSyncManifest,
@@ -42,6 +42,7 @@ import {
 import { reconcileMetadataBundles } from "@/lib/sync/threeWayMerge";
 import { validateSyncCandidate } from "@/lib/sync/validateSyncCandidate";
 import { applyIncomingDriveBundleSafely } from "@/lib/sync/safePull";
+import { withLocalVaultUpdate } from "@/lib/sync/editorLease";
 
 export type DriveWriteBackProgress = {
   phase: "checking" | "preparing" | "uploading" | "committing" | "complete";
@@ -95,31 +96,37 @@ function fileSize(file: DriveFileRecord) {
   return Number.isFinite(size) && size >= 0 ? size : null;
 }
 
-function newestFirst(first: DriveFileRecord, second: DriveFileRecord) {
-  return Date.parse(second.modifiedTime ?? "") - Date.parse(first.modifiedTime ?? "");
-}
-
-function repairManifestEntries(entries: DriveSyncManifestEntry[], metadataChildren: DriveFileRecord[], fileChildren: DriveFileRecord[]) {
+async function repairManifestEntries(accessToken: string, entries: DriveSyncManifestEntry[], metadataChildren: DriveFileRecord[], fileChildren: DriveFileRecord[]) {
   const metadataById = new Map(metadataChildren.map((file) => [file.id, file]));
   const filesById = new Map(fileChildren.map((file) => [file.id, file]));
   const childrenFor = (entry: DriveSyncManifestEntry) => entry.kind === "metadata" ? metadataChildren : fileChildren;
   const byIdFor = (entry: DriveSyncManifestEntry) => entry.kind === "metadata" ? metadataById : filesById;
   let repaired = 0;
-  const repairedEntries = entries.map((entry) => {
-    if (byIdFor(entry).has(entry.cloudFileId)) return { ...entry };
-    const replacement = childrenFor(entry)
-      .filter((file) => file.name === entry.fileName)
-      .filter((file) => {
+  const repairedEntries: DriveSyncManifestEntry[] = [];
+  for (const entry of entries) {
+    if (byIdFor(entry).has(entry.cloudFileId)) {
+      repairedEntries.push({ ...entry });
+      continue;
+    }
+    // A logical name (even with a matching size) is not an object identity.
+    let replacement: DriveFileRecord | undefined;
+    if (entry.sha256) {
+      for (const file of childrenFor(entry).filter((file) => file.name === entry.fileName)) {
         const size = fileSize(file);
-        return entry.size <= 0 || size === null || size === entry.size;
-      })
-      .toSorted(newestFirst)[0];
+        if (entry.kind === "file" && size !== null && size !== entry.size) continue;
+        const bytes = await downloadDriveFileBlob(accessToken, file.id);
+        if (await sha256(bytes) === entry.sha256.toLowerCase()) {
+          replacement = file;
+          break;
+        }
+      }
+    }
     if (!replacement) {
       throw new Error(`Google Drive cannot find ${entry.kind === "metadata" ? "metadata" : "file"} “${entry.fileName}”. Run a fresh Android backup before uploading website changes.`);
     }
     repaired += 1;
-    return { ...entry, cloudFileId: replacement.id };
-  });
+    repairedEntries.push({ ...entry, cloudFileId: replacement.id });
+  }
   return { entries: repairedEntries, repaired };
 }
 
@@ -161,7 +168,6 @@ async function verifiedDriveUpload(accessToken: string, parentId: string, fileNa
   const uploaded = await createDriveFile(accessToken, parentId, fileName, blob, mimeType);
   const downloaded = await downloadDriveFileBlob(accessToken, uploaded.id, mimeType);
   if (downloaded.size !== blob.size || await sha256(downloaded) !== expectedHash) {
-    await deleteDriveFile(accessToken, uploaded.id).catch(() => undefined);
     throw new Error(`Google Drive did not return the same bytes after uploading “${fileName}”. Nothing was committed.`);
   }
   return { uploaded, sha256: expectedHash };
@@ -170,8 +176,11 @@ async function verifiedDriveUpload(accessToken: string, parentId: string, fileNa
 async function downloadMetadataBundle(accessToken: string, manifest: DriveSyncManifest) {
   const downloadedFiles = await Promise.all(manifest.entries.filter((entry) => entry.kind === "metadata").map(async (entry) => {
     const blob = await downloadDriveFileBlob(accessToken, entry.cloudFileId, "application/json");
-    if (entry.size > 0 && blob.size !== entry.size) throw new Error(`Metadata size verification failed for ${entry.fileName}.`);
-    if (entry.sha256 && await sha256(blob) !== entry.sha256) throw new Error(`Metadata integrity verification failed for ${entry.fileName}.`);
+    if (entry.sha256) {
+      if (await sha256(blob) !== entry.sha256.toLowerCase()) throw new Error(`Metadata integrity verification failed for ${entry.fileName}.`);
+    } else if (entry.size > 0 && blob.size !== entry.size) {
+      throw new Error(`Metadata size verification failed for ${entry.fileName}.`);
+    }
     let json: unknown;
     try {
       json = JSON.parse(await blob.text());
@@ -201,10 +210,6 @@ function downloadedMetadataForManifest(candidate: MetadataRestoreBundle, manifes
   });
 }
 
-async function cleanupStagedFiles(accessToken: string, fileIds: string[]) {
-  await Promise.allSettled(fileIds.map((fileId) => deleteDriveFile(accessToken, fileId)));
-}
-
 export async function writeWebsiteChangesToDrive({ accessToken, onProgress }: {
   accessToken: string;
   onProgress?: (progress: DriveWriteBackProgress) => void;
@@ -230,12 +235,13 @@ export async function writeWebsiteChangesToDrive({ accessToken, onProgress }: {
     let reconciledPendingChanges: SyncPendingChanges | null = null;
     let reconciledPreflight: SyncPreflight | null = null;
     let repairedManifestEntries = 0;
+    let capturedGeneration = await loadLocalVaultGeneration();
 
     if (!isInitialBackup) {
       const latest = await loadLatestManifest(accessToken);
       scan = latest.scan;
       currentManifestRevisionId = latest.manifestRevisionId;
-      const repaired = repairManifestEntries(latest.manifest.entries, await listDriveChildren(accessToken, latest.scan.folders.metadata!.id), await listDriveChildren(accessToken, latest.scan.folders.files!.id));
+      const repaired = await repairManifestEntries(accessToken, latest.manifest.entries, await listDriveChildren(accessToken, latest.scan.folders.metadata!.id), await listDriveChildren(accessToken, latest.scan.folders.files!.id));
       repairedManifestEntries = repaired.repaired;
       currentManifest = { ...latest.manifest, entries: repaired.entries };
       currentBundle = await downloadMetadataBundle(accessToken, currentManifest);
@@ -246,11 +252,14 @@ export async function writeWebsiteChangesToDrive({ accessToken, onProgress }: {
         revision: await computeBundleRevision(currentBundle),
         bundle: structuredClone(currentBundle),
       };
-      const safePull = await applyIncomingDriveBundleSafely(currentBundle, currentBase);
+      assertGoogleDriveSession(token, accountId);
+      await stageIncomingDriveBundle(currentBundle, currentBase);
+      const safePull = await withLocalVaultUpdate(accountId, () => applyIncomingDriveBundleSafely(currentBundle!, currentBase));
       reconciledCandidate = safePull.reconciledBundle;
       reconciledOperationIds = safePull.reconciledOperationIds;
       reconciledPendingChanges = safePull.reconciledPendingChanges;
       reconciledPreflight = safePull.reconciledPreflight;
+      capturedGeneration = safePull.localGeneration;
     }
 
     const [latestPending, latestOperations, base] = await Promise.all([
@@ -258,6 +267,7 @@ export async function writeWebsiteChangesToDrive({ accessToken, onProgress }: {
       reconciledOperationIds ? Promise.resolve(null) : loadPendingLocalSyncOperations(),
       loadLocalSyncBase(),
     ]);
+    if (await loadLocalVaultGeneration() !== capturedGeneration) throw new Error("Website changes arrived while preparing backup. Nothing was uploaded; retry after saving.");
     const pending = reconciledPendingChanges ?? latestPending;
     const operationIds = reconciledOperationIds ?? latestOperations?.map((operation) => operation.id) ?? [];
     if (!pending) throw new Error("Website changes could not be captured safely for backup.");
@@ -300,7 +310,7 @@ export async function writeWebsiteChangesToDrive({ accessToken, onProgress }: {
     const totalFiles = metadataToUpload.length + attachmentsToUpload.length + (isInitialBackup ? 0 : 1);
     const stagedFileIds: string[] = [];
     let completedFiles = 0;
-    let committed = false;
+    let stagedBytes = 0;
     let nextEntries = [...currentManifest.entries];
 
     onProgress?.({ phase: "preparing", completedFiles, totalFiles, currentFileName: null });
@@ -311,6 +321,7 @@ export async function writeWebsiteChangesToDrive({ accessToken, onProgress }: {
         onProgress?.({ phase: "uploading", completedFiles, totalFiles, currentFileName: historyName });
         const history = await verifiedDriveUpload(accessToken, scan.folders.backups!.id, historyName, historyBlob, "application/json");
         stagedFileIds.push(history.uploaded.id);
+        stagedBytes += historyBlob.size;
         completedFiles += 1;
       }
 
@@ -319,6 +330,7 @@ export async function writeWebsiteChangesToDrive({ accessToken, onProgress }: {
         const blob = jsonBlob(file.json);
         const upload = await verifiedDriveUpload(accessToken, scan.folders.metadata!.id, file.fileName, blob, "application/json");
         stagedFileIds.push(upload.uploaded.id);
+        stagedBytes += blob.size;
         const previous = currentManifest.entries.find((entry) => entry.kind === "metadata" && entry.fileName === file.fileName);
         nextEntries = replaceEntry(nextEntries, { ...previous, path: previous?.path || `metadata/${file.fileName}`, fileName: file.fileName, backupEntry: previous?.backupEntry || file.fileName, kind: "metadata", sha256: upload.sha256, size: blob.size, cloudFileId: upload.uploaded.id, updatedAt: null });
         completedFiles += 1;
@@ -331,6 +343,7 @@ export async function writeWebsiteChangesToDrive({ accessToken, onProgress }: {
         const fileName = `${attachment.id}.${safeExtension(attachment.name)}`;
         const upload = await verifiedDriveUpload(accessToken, scan.folders.files!.id, fileName, blob, attachment.mimeType || blob.type || "application/octet-stream");
         stagedFileIds.push(upload.uploaded.id);
+        stagedBytes += blob.size;
         nextEntries = replaceEntry(nextEntries, { path: `files/${fileName}`, fileName, backupEntry: `files/${attachment.id}`, kind: "file", sha256: upload.sha256, size: blob.size, cloudFileId: upload.uploaded.id, updatedAt: null });
         completedFiles += 1;
       }
@@ -350,13 +363,20 @@ export async function writeWebsiteChangesToDrive({ accessToken, onProgress }: {
       const nextManifest: DriveSyncManifest = { ...currentManifest, schemaVersion: 1, cloudVersion, storage: "google-drive-api", layout: "MyVault/metadata, MyVault/files, MyVault/manifests, MyVault/backups", entries: nextEntries };
       const manifestBlob = jsonBlob(nextManifest, true);
       let manifestFileId: string;
-      if (isInitialBackup) {
-        manifestFileId = (await createDriveFile(accessToken, scan.folders.manifests!.id, "sync_manifest.json", manifestBlob, "application/json")).id;
-      } else {
-        await updateDriveFileContent(accessToken, scan.manifestFile!.id, manifestBlob, "application/json");
-        manifestFileId = scan.manifestFile!.id;
+      try {
+        if (isInitialBackup) {
+          manifestFileId = (await createDriveFile(accessToken, scan.folders.manifests!.id, "sync_manifest.json", manifestBlob, "application/json")).id;
+        } else {
+          await updateDriveFileContent(accessToken, scan.manifestFile!.id, manifestBlob, "application/json");
+          manifestFileId = scan.manifestFile!.id;
+        }
+      } catch (publicationError) {
+        // The server may have committed even when its response was lost.
+        const observed = await loadLatestManifest(accessToken).catch(() => null);
+        if (!observed || canonicalJson(observed.manifest) !== canonicalJson(nextManifest)
+          || (!isInitialBackup && observed.scan.manifestFile?.id !== scan.manifestFile!.id)) throw publicationError;
+        manifestFileId = observed.scan.manifestFile!.id;
       }
-      committed = true;
 
       const committedRaw = await downloadDriveFileJson<unknown>(accessToken, manifestFileId);
       if (canonicalJson(committedRaw) !== canonicalJson(nextManifest)) throw new Error("Google Drive committed a manifest that does not match the verified candidate. Local changes were retained for recovery.");
@@ -374,9 +394,9 @@ export async function writeWebsiteChangesToDrive({ accessToken, onProgress }: {
       let localStateUpdated = true;
       try {
         assertGoogleDriveSession(token, accountId);
-        await saveMetadataRestoreBundle(nextBundle);
-        await saveLocalSyncBase({ schemaVersion: 1, accountId, revision: await computeBundleRevision(nextBundle), bundle: structuredClone(nextBundle) });
-        await clearLocalSyncPendingChanges(operationIds);
+        const publishedBase = { schemaVersion: 1 as const, accountId, revision: await computeBundleRevision(nextBundle), bundle: structuredClone(nextBundle) };
+        await rememberVerifiedWebPublication(publishedBase, base?.revision.revisionId ?? null);
+        localStateUpdated = await withLocalVaultUpdate(accountId, () => settlePublishedDriveBundle(nextBundle, publishedBase, capturedGeneration));
       } catch {
         localStateUpdated = false;
       }
@@ -384,8 +404,8 @@ export async function writeWebsiteChangesToDrive({ accessToken, onProgress }: {
       onProgress?.({ phase: "complete", completedFiles, totalFiles, currentFileName: null });
       return { status: "uploaded" as const, cloudVersion, uploadedMetadataFiles: metadataToUpload.length, uploadedAttachmentFiles: attachmentsToUpload.length, repairedManifestEntries, localStateUpdated };
     } catch (error) {
-      if (!committed) await cleanupStagedFiles(accessToken, stagedFileIds);
-      throw error;
+      const message = error instanceof Error ? error.message : "Backup could not be verified.";
+      throw new Error(`${message} At least ${stagedFileIds.length} staging objects (${stagedBytes} bytes) were retained; no Drive files were deleted.`, { cause: error });
     }
   });
 }
