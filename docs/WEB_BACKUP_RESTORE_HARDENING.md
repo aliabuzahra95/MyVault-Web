@@ -1,6 +1,181 @@
 # Web Backup/Restore Hardening
 
-## Status: paused at an explicit protected boundary
+## Current status: implementation tested; live handoffs blocked
+
+Updated 2026-09-05 after the user's narrow Android writer exception. The earlier
+audit below is historical. The writer blocker has been addressed in production
+code, and the independent Web startup/editing work has continued. This is **not**
+acceptance of the three required real Android/Web round trips.
+
+### Source checkpoints
+
+| Project | Starting HEAD | Recovery tag | Implemented HEAD |
+| --- | --- | --- | --- |
+| Android, `frozen-design-master-port` | `182282cbba582224fc697ea7146d89854830d082` | `recovery-android-writer-safety-20260905` | `31f3c80f96db81395bd9ac69bc11025bee8c8262` |
+| Web, `main` | `5cdc792f47f390693ddf2fde7c7b1e5d166593aa` | `recovery-web-writer-safety-20260905` | `6c350fb74d38217272058eeac564660582119085` |
+
+Both recovery tags were pushed and peeled remote revisions matched local.
+Both tracked trees were clean at the start. Existing untracked Android artifacts
+were left untouched. No reset/stash or full-project copy was used. Web code is
+split into `3ee2ad4` (integrity), `472a257` (writer/edit protection), and `6c350fb`
+(background orchestration). The final documentation commit follows these.
+
+### Proven causes and fixes
+
+1. Android updated existing metadata/binary IDs before publishing its new
+   manifest. Interruption left the previous manifest pointing at different bytes.
+   The production push now uses `DriveBackupPublisher`: transactionally capture
+   metadata, create separate changed objects, verify bytes, recheck the active
+   manifest, publish once, then read back before advancing success state.
+2. Web already staged new IDs, but its failure cleanup could delete newly
+   committed files when the publication response was lost. Cleanup is removed.
+   An uncertain response triggers one readback, never an unconditional replay.
+3. Web writer fallback selected same-name/same-size newest objects. That is not
+   identity. Any missing-ID fallback now requires the expected raw-byte SHA-256
+   from the correct parent. Duplicate active manifests fail explicitly.
+4. Startup waited for cloud work before rendering the app. The shell and scoped
+   cached content now render independently. One account-scoped owner performs
+   check -> download -> validate -> stage -> guarded apply -> UI update. Manual
+   and automatic pulls use it and the existing account sync lock.
+5. A clean-at-download-start check did not protect subsequent typing/autosaves.
+   Editors hold a browser shared lock through their final durable save. Apply
+   takes an exclusive lock without waiting/covering the app, and an IndexedDB
+   transaction rechecks the captured local generation. Otherwise it stays staged.
+6. Older snapshot completion could clear later edits. Publication settlement now
+   clears overlays/journal/binary cache only in the same transaction that verifies
+   the captured generation. Later edits remain pending. A readback-verified own
+   publication is recorded as their ancestor, so the next backup does not mistake
+   the browser's own upload for an unrelated Android change. Genuine divergent
+   edits still use the existing three-way reconciliation/keep-both facilities.
+7. Local writes previously resolved on a request success before transaction
+   commit. Draft + journal + generation now commit together; aborts and synchronous
+   quota/clone failures roll back. Failed final editor saves retain the in-memory
+   draft and lock, expose Retry save, and warn against closing the tab.
+
+### Reader compatibility and unchanged contracts
+
+- Android and Web current readers use `cloudFileId` from the active manifest for
+  metadata/binaries. Active selection is scoped to `MyVault/manifests` and
+  `sync_manifest.json`. No logical filenames, paths, schema versions or serialized
+  IDs changed. New duplicate logical metadata names have different exact IDs.
+- Android still retains its legacy missing-ID/name fallback. The new writer
+  rejects a previous manifest lacking exact IDs **before staging duplicates**;
+  it does not modify those older reader semantics. Older backups remain readable
+  by their existing reader, but updating a legacy manifest without IDs is a
+  documented compatibility stop, not an automatic migration.
+- Web's existing raw-byte SHA validation is preserved. A legacy metadata size
+  mismatch is tolerated only with an exact SHA match; absent SHA remains strict
+  about size. JSON is not reserialized before checking a downloaded hash.
+- Android metadata is captured in its existing Room transaction. Attachment IDs
+  come from that same export; changed file bytes are copied/hashed and rechecked
+  before upload. Unchanged files are reused after hash/size verification.
+- No Room/entity/migration, restore algorithm, encryption, backup representation,
+  OAuth/client/scope/secret, Drive hierarchy, widget, Quran, or PDF architecture
+  changes. Android's only exception is the writer and its narrow helper/tests.
+- New Web metadata is local, in the existing account metadata store. No IndexedDB
+  version bump, new backend, shared revision format, or cloud sync protocol.
+
+### Runtime evidence
+
+Real Chrome, isolated profiles, actual Web code with mocked Drive:
+
+- Delayed download: shell visible in **248 ms**, first metadata request **351 ms**,
+  existing Course note editor ready **441 ms**. Automated typing took **148 ms**.
+  These are one local small-fixture run, not Internet/large-vault guarantees.
+- Typing survived download completion; the incoming bundle stayed staged. Closing
+  the editor flushed the draft; explicit retry safely applied the update.
+- An unchanged committed manifest skipped another metadata download. A manifest
+  change during download was rejected without replacing the active local bundle.
+- Shared editor lock in another tab blocked replacement. Late account-A autosave
+  after switching to B stayed in A. Query clients/corpus callbacks are scoped and
+  invalidated on account change.
+- Edit C made while B uploaded survived B's settlement; the next upload included
+  C without a false conflict. Genuine divergent edits retained conflict copies.
+- Injected quota failure did not commit a journal-only mutation. Retry saved the
+  retained draft before releasing its editor protection. Closing/crashing the
+  browser while storage remains unavailable can still lose in-memory-only work.
+- Offline/503 startup kept cached content/navigation usable and reached a small
+  failure status, not an endless full-screen spinner.
+- Screenshots visually inspected: `/tmp/myvault-background-editor-staged.png`,
+  `/tmp/myvault-offline-cached-shell.png`, and
+  `/tmp/myvault-web-nonblocking-settings.png`.
+
+Separate 147-page / 5,623,880-byte local PDF regression: highlights on pages 98
+and 113, page note, zoom, close/reopen and reading-position persistence passed.
+Peak five canvases/text layers; resources released on close; no unhandled errors.
+The PDF was read locally into an isolated browser; its original file was not
+edited and it was not uploaded to Drive.
+
+### Build evidence
+
+- Android JBR 21.0.11: 279 unit tests, zero failures/errors/skips; lintDebug,
+  assembleDebug and assembleRelease passed. Final log:
+  `/tmp/myvault-android-writer-verification.log`.
+- Android production helper fault injection exercises actual publication order:
+  first/mid metadata failure, changed binary verification failure, pre-publication
+  failure, rejected publication, changed remote, lost response and failed final
+  readback. It proves original A bytes/IDs remain and B resolves after success.
+  This is not an Android UI restore or a live Google Drive test.
+- Android debug SHA-256:
+  `7affe405443c82538e7b8961226859eed1e0df7525122a529346a5b12d727906`.
+- Android release/R8 output is **unsigned**, version 0.1.0 (1), SHA-256:
+  `0286636c95e84cb3a67c2268b30c46e3c9302df961e4dd176254c12f689816bf`.
+  Neither APK was installed over the user's phone or uploaded.
+- Web complete typecheck/build, workspace, safe-sync, auth/restore, three Quran
+  suites, browser-sync, background-sync and PDF regression passed. No standalone
+  lint command is configured; existing sourcemap/large-chunk warnings remain.
+  Browser scripts use the existing local Chrome/runtime paths, with no new
+  production dependency. `git diff --check` passed.
+
+### Recovery, storage and remaining gates
+
+- Previous manifest copies are retained in the existing backups folder, along
+  with unchanged original referenced objects. This is a recoverable exact
+  manifest-and-files combination, but no new recovery-picker UI is introduced.
+  Archived raw sync manifests may require an explicit developer-assisted recovery;
+  do not present them as an automatically selectable Android restore archive.
+- No Drive object was deleted, moved, garbage-collected or migrated. No live
+  Drive test objects were created: **count 0, storage 0 bytes**. Injected tests
+  use memory-only mock Drive objects. Future interrupted attempts retain staging
+  objects; failure messages give a lower-bound count/bytes of verified creates.
+  Lost create responses can leave additional objects whose IDs are unknown.
+- Storage grows by archived manifests and changed object generations. Unchanged
+  PDFs stay incremental. No cleanup has been added or authorized.
+- Android clients before `31f3c80` and Web clients before these fixes must be
+  updated. Old Android writers can still overwrite referenced objects. A website
+  deployment cannot update the phone's installed APK.
+- Browser locks do not lock Android. Check-before-publication detects observed
+  remote changes but has a final race window; no global cross-device compare-and-
+  swap guarantee is claimed. Use sequential handoffs, not simultaneous writers.
+- Browsers without Web Locks retain staged updates rather than risk an editor.
+  Large-vault parse/projection responsiveness, crash during atomic commit, and
+  all token-expiry/rate-limit combinations remain incompletely tested.
+- **BLOCKED:** three real Android -> Web -> Android / reverse UI cycles, actual
+  test-account binary/formatting restores, and Web-created content on Android.
+  The separate empty Chrome profile is not authenticated. Its actual page says
+  Not connected / Popup window closed. `aahforex@gmail.com` remains the only
+  authorized live test account; no primary account or primary phone was touched.
+- To resume: authenticate that isolated profile to aahforex, verify actual Google
+  identity and disposable local datasets, use an isolated Android emulator with
+  the new writer, preserve its external test snapshot, then execute the matrix's
+  three distinct UI handoffs. Do not substitute injected fixtures for this gate.
+
+### Deployment
+
+Production `6c350fb` is live at https://myvault-web.vercel.app via deployment
+`dpl_Ewwv2DML6cv28XfD1p1HrmM87aAD` (READY). Fresh Chrome at 1440x1000 and 390x844
+loaded the actual new JavaScript asset and all six main routes without overflow
+or unhandled errors. Served asset SHA and exact evidence are in the acceptance
+matrix. These fresh unauthenticated checks do not prove authenticated backup.
+No deployment/OAuth configuration changed. Documentation-only commits do not
+change the tested application code.
+
+## Historical audit: before the narrow Android exception
+
+The remainder preserves the original evidence at the earlier source revision.
+Its paused/not-implemented statements describe that earlier audit only.
+
+### Historical status: paused at an explicit protected boundary
 
 Date: 2026-09-05. This is NOT a completion or deployment acceptance report.
 The current Android writer can invalidate the last committed backup during an
