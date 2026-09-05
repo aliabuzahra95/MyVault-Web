@@ -128,6 +128,7 @@ export async function stageVerifiedMetadataRestore({
   }));
 
   issues.push(...outcomes.flatMap((outcome) => outcome.issues));
+  if (issues.length) throw new RestoreCompatibilityError(uniqueIssues(issues));
   const downloadedFiles = outcomes.flatMap((outcome) => outcome.file ? [outcome.file] : []);
   const bundle = buildMetadataRestoreBundle(manifest, downloadedFiles);
   const candidate = validateSyncCandidate(bundle);

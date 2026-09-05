@@ -230,7 +230,11 @@ export async function findMyVaultDriveMap(accessToken: string): Promise<MyVaultD
     findFolder(accessToken, "backups", rootFolder.id),
   ]);
 
-  const manifestFile = manifests ? await findDriveFile(accessToken, driveManifest.fileName, manifests.id) : null;
+  const committedManifests = manifests
+    ? (await listDriveChildren(accessToken, manifests.id)).filter((file) => file.name === driveManifest.fileName)
+    : [];
+  if (committedManifests.length > 1) throw new Error("More than one committed MyVault manifest exists. Nothing was changed; the active backup must be identified before continuing.");
+  const manifestFile = committedManifests[0] ?? null;
   const scan = {
     scannedAt: new Date().toISOString(),
     rootFolder,
