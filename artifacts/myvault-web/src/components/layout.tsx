@@ -6,6 +6,7 @@ import {
   Cloud,
   Home,
   Loader2,
+  RefreshCw,
   Menu,
   PanelLeftClose,
   PanelLeftOpen,
@@ -20,6 +21,7 @@ import { hasGoogleClientId } from "@/lib/googleDrive/identity";
 import { KnowledgeNavigator } from "@/components/navigation/knowledge-navigator";
 import { useGoogleDriveProfile } from "@/hooks/useGoogleDriveProfile";
 import { useGoogleDriveConnection } from "@/hooks/useGoogleDriveConnection";
+import { hasFailedEditorSaves, retryFailedEditorSaves } from "@/lib/sync/editorLease";
 
 const applicationNavItems = [
   { path: "/", label: "Dashboard", icon: Home },
@@ -81,9 +83,16 @@ function ProfileHeader() {
 type DriveConnection = ReturnType<typeof useGoogleDriveConnection>;
 
 function SidebarContent({ closeMobile, collapseDesktop, drive }: { closeMobile?: () => void; collapseDesktop?: () => void; drive: DriveConnection }) {
+  const [saveFailed, setSaveFailed] = useState(hasFailedEditorSaves);
+  useEffect(() => {
+    const refresh = () => setSaveFailed(hasFailedEditorSaves());
+    window.addEventListener("myvault-local-save-failed", refresh);
+    return () => window.removeEventListener("myvault-local-save-failed", refresh);
+  }, []);
   const googleConfigured = hasGoogleClientId();
   const driveConnected = Boolean(drive.token && drive.accountId);
   const driveChecking = drive.status === "initializing" || drive.status === "renewing";
+  const backgroundLabel = { idle: null, checking: "Checking Drive", downloading: "Downloading backup", validating: "Validating backup", applying: "Applying update", current: "Drive checked", staged: "Update ready", error: "Update needs review" }[drive.background.phase];
   const [searchActive, setSearchActive] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -172,6 +181,14 @@ function SidebarContent({ closeMobile, collapseDesktop, drive }: { closeMobile?:
       </div>
 
       <div className="shrink-0 px-3 pb-3 pt-1">
+        {saveFailed ? <div role="alert" className="px-2.5 py-2 text-xs text-destructive">A note could not be saved. Keep this tab open. <button className="underline" onClick={() => void retryFailedEditorSaves().catch(() => setSaveFailed(true))}>Retry save</button></div> : null}
+        {backgroundLabel || drive.error ? (
+          <div className="flex items-center gap-2 px-2.5 py-2 text-xs text-muted-foreground" role="status" title={drive.background.error ?? drive.error ?? undefined} data-testid="drive-background-status">
+            {["checking", "downloading", "validating", "applying"].includes(drive.background.phase) ? <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" /> : <Cloud className="h-3.5 w-3.5 shrink-0" />}
+            <Link href="/settings" className="min-w-0 flex-1">{drive.error && !backgroundLabel ? "Drive unavailable" : backgroundLabel}</Link>
+            {["staged", "error"].includes(drive.background.phase) ? <button type="button" title="Retry Drive check" aria-label="Retry Drive check" className="flex h-8 w-8 shrink-0 items-center justify-center" onClick={() => void drive.restoreMetadata()}><RefreshCw className="h-3.5 w-3.5" /></button> : null}
+          </div>
+        ) : null}
         <div className="flex h-10 items-center gap-2 rounded-md bg-sidebar-accent/45 px-2.5 text-muted-foreground">
           <Link href="/settings" className="flex min-w-0 flex-1 items-center gap-2" onClick={closeMobile}>
             <Cloud className="h-4 w-4 shrink-0" />
@@ -204,17 +221,6 @@ export default function Layout({ children }: { children: ReactNode }) {
   const drive = useGoogleDriveConnection();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [desktopCollapsed, setDesktopCollapsed] = useState(() => localStorage.getItem("myvault-sidebar-collapsed") === "true");
-
-  if (drive.status === "initializing" || drive.status === "renewing") {
-    return (
-      <div className="flex min-h-screen items-center justify-center bg-background text-foreground" role="status" aria-live="polite">
-        <div className="flex items-center gap-3 text-sm text-muted-foreground">
-          <Loader2 className="h-5 w-5 animate-spin text-primary" />
-          Checking your latest MyVault backup
-        </div>
-      </div>
-    );
-  }
 
   function setSidebarCollapsed(collapsed: boolean) {
     setDesktopCollapsed(collapsed);

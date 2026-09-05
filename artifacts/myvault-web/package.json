@@ -14,7 +14,8 @@
     "verify:android-backup": "tsx scripts/verify-android-backup-directory.ts",
     "verify:quran": "tsx scripts/verify-quran-phase1.ts && tsx scripts/verify-quran-phase2.ts && tsx scripts/verify-quran-phase3.ts",
     "verify:pdf-performance": "node scripts/verify-pdf-performance.mjs",
-    "verify:sync-browser": "tsx scripts/verify-browser-sync.mjs"
+    "verify:sync-browser": "tsx scripts/verify-browser-sync.mjs",
+    "verify:background-sync": "tsx scripts/verify-background-sync.mjs"
   },
   "devDependencies": {
     "@hookform/resolvers": "^3.10.0",

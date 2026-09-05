@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { Switch, Route, Router as WouterRouter, useLocation } from "wouter";
 import { QueryClient, QueryClientProvider, useQueryClient } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
@@ -19,12 +19,13 @@ import TagsPage from "@/pages/tags";
 import KnowledgeTagsPage from "@/pages/knowledge-tags";
 import SettingsPage from "@/pages/settings";
 import NotFound from "@/pages/not-found";
+import { getActiveAccountId, onActiveAccountChange } from "@/lib/sync/accountContext";
 
-const queryClient = new QueryClient({
+function createQueryClient() { return new QueryClient({
   defaultOptions: {
     queries: { retry: 1, staleTime: 30000 },
   },
-});
+}); }
 
 function RestoreRedirect() {
   const [, navigate] = useLocation();
@@ -76,8 +77,17 @@ function Router() {
 }
 
 function App() {
+  const [account, setAccount] = useState(() => ({ id: getActiveAccountId(), client: createQueryClient() }));
+  useEffect(() => onActiveAccountChange((id) => {
+    setAccount((previous) => {
+      if (previous.id === id) return previous;
+      void previous.client.cancelQueries();
+      previous.client.clear();
+      return { id, client: createQueryClient() };
+    });
+  }), []);
   return (
-    <QueryClientProvider client={queryClient}>
+    <QueryClientProvider key={account.id} client={account.client}>
       <WorkspaceDataQuerySync />
       <AppProviders>
         <TooltipProvider>

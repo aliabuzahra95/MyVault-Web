@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { loadRestoredCorpus, type RestoredCorpus } from "@/lib/restore/restoredCorpus";
-import { onActiveAccountChange } from "@/lib/sync/accountContext";
+import { getActiveAccountId, onActiveAccountChange } from "@/lib/sync/accountContext";
 
 export function useRestoredCorpus() {
   const [corpus, setCorpus] = useState<RestoredCorpus | null>(null);
@@ -8,23 +8,29 @@ export function useRestoredCorpus() {
 
   useEffect(() => {
     let cancelled = false;
+    let refreshId = 0;
 
-    const refresh = () => void loadRestoredCorpus()
+    const refresh = () => {
+      const requestId = ++refreshId;
+      const accountId = getActiveAccountId();
+      const current = () => !cancelled && requestId === refreshId && accountId === getActiveAccountId();
+      void loadRestoredCorpus()
       .then((restoredCorpus) => {
-        if (!cancelled) {
+        if (current()) {
           setCorpus(restoredCorpus);
         }
       })
       .catch(() => {
-        if (!cancelled) {
+        if (current()) {
           setCorpus(null);
         }
       })
       .finally(() => {
-        if (!cancelled) {
+        if (current()) {
           setIsLoading(false);
         }
       });
+    };
 
     refresh();
     window.addEventListener("myvault-restored-corpus-changed", refresh);
