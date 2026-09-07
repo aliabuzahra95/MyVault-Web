@@ -78,4 +78,10 @@ Chrome screenshots inspected: `/tmp/myvault-pdf-1440.png`, `/tmp/myvault-pdf-360
 2. No live production record/Room row comparison was made. The Android support/geometry tests and emulator presentation tests are separate evidence.
 3. No new OCR, richer geometry contract, background cloud freshness protocol or offline-site installation architecture was introduced.
 4. React-PDF's exported DocumentContext/LinkService paths are used to retain its annotation/link layers with the leased document. Their compatibility was built and tested against the installed React-PDF 10.4.1 / PDF.js 5.4.296; dependency upgrades should rerun the PDF browser suite.
-5. This report does not claim a live deployment or a signed Android release upload merely because Git/build checks pass.
+5. No signed Android release upload was performed in this task.
+
+## Production publication
+
+Implementation commit `5e70b99e54615aa175853308965745dd3dd592d4` was pushed to `main` and deployed to the existing Vercel project. Deployment `dpl_EzyUyYDViwof6aVEhoZ1W5Z1EspL` reached READY and was aliased to `https://myvault-web.vercel.app`.
+
+A fresh isolated Chrome session loaded `/library` with HTTP 200 and no page errors. It loaded `index-Dnq04cY2.js`; the deployed `pdf-document-viewer-CX6Ra8mU.js` returned HTTP 200 and contained the new partial-preview and Study-link UI. Screenshot: `/tmp/myvault-pdf-production-live.png`. This confirms publication, not an authenticated Drive restore. The publication-check browser contained no user account/data.
