@@ -57,6 +57,7 @@ export type RestoredPdfReadingProgress = {
 };
 
 export type RestoredPdfAnnotation = {
+  selectedText?: string | null;
   id: string;
   attachmentId: string;
   libraryFolderId: string | null;
@@ -376,6 +377,7 @@ function buildPdfAnnotations(rows: JsonRecord[]) {
       right: numberValue(row, "right"),
       bottom: numberValue(row, "bottom"),
       color: stringValue(row, "color", "yellow").toLowerCase(),
+      selectedText: nullableStringForKeys(row, ["selectedText", "selected_text"]),
       noteText: nullableStringForKeys(row, ["noteText", "note_text"]),
       annotationType,
       textSize: numberValueForKeys(row, ["textSize", "text_size"], 16),

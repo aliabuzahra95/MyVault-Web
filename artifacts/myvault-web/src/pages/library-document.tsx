@@ -29,6 +29,7 @@ import { recordRecentActivity } from "@/lib/recentActivity";
 import { useRestoredCorpus } from "@/hooks/useRestoredCorpus";
 import {
   loadLocalAttachmentBlob,
+  loadMetadataRestoreBundle,
   saveLocalAttachmentBlob,
   loadLocalPdfAnnotationChanges,
   loadLocalPdfReaderState,
@@ -39,6 +40,7 @@ import {
   type LocalPdfReaderState,
 } from "@/lib/restore/localRestoreStore";
 import type { PdfReaderProgress } from "@/components/library/pdf-document-viewer";
+import { beginPdfOpen, markPdfOpen } from '@/components/library/pdf-open-timing';
 import type { RestoredPdfAnnotation } from "@/lib/restore/restoredCorpus";
 
 const PdfDocumentViewer = lazy(() =>
@@ -84,11 +86,13 @@ function formatBytes(bytes: number | null | undefined) {
 
 export default function LibraryDocumentPage() {
   const { id = "" } = useParams<{ id: string }>();
+  useEffect(() => beginPdfOpen(id), [id]);
   const [, navigate] = useLocation();
   const queryClient = useQueryClient();
-  const { data: attachment, isLoading } = useGetAttachment(id);
+  const { data: attachment, isLoading } = useGetAttachment(id, { query: { queryKey: getGetAttachmentQueryKey(id), networkMode: "always" } });
   const { corpus, isLoading: restoredCorpusLoading } = useRestoredCorpus();
   const [fileUrl, setFileUrl] = useState<string | null>(null);
+  const [studyLinks, setStudyLinks] = useState<Array<{id: string; noteId: string; title: string; pageIndex: number}>>([]);
   const [status, setStatus] = useState<ReaderStatus>("idle");
   const [error, setError] = useState<string | null>(null);
   const [initialReaderState, setInitialReaderState] = useState<LocalPdfReaderState | null>(null);
@@ -101,6 +105,22 @@ export default function LibraryDocumentPage() {
   const annotationWriteQueue = useRef(Promise.resolve());
 
   activeAttachmentId.current = id;
+
+  useEffect(() => {
+    let cancelled = false;
+    setStudyLinks([]);
+    void loadMetadataRestoreBundle().then(bundle => {
+      const rows = bundle?.files.find(file => file.fileName === 'source_backlinks.json')?.json;
+      if (cancelled || !Array.isArray(rows)) return;
+      setStudyLinks(rows.flatMap((row: Record<string, unknown>) => {
+        if (!row || row.attachmentId !== id || typeof row.noteId !== 'string' || typeof row.pageIndex !== 'number' || !Number.isInteger(row.pageIndex) || row.pageIndex < 0 || row.deletedAt) return [];
+        const note = corpus?.notes.find(note => note.id === row.noteId);
+        if (!note) return [];
+        return [{id: String(row.id ?? `${row.noteId}:${row.pageIndex}`), noteId: row.noteId, title: note.title, pageIndex: row.pageIndex}];
+      }));
+    }).catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [id, corpus]);
 
   useEffect(() => {
     setFileUrl(null);
@@ -144,7 +164,7 @@ export default function LibraryDocumentPage() {
         } : null);
       })
       .finally(() => {
-        if (!cancelled) setReaderStateLoaded(true);
+        if (!cancelled) { setReaderStateLoaded(true); markPdfOpen(id, 'progressReady'); }
       });
     return () => {
       cancelled = true;
@@ -160,7 +180,7 @@ export default function LibraryDocumentPage() {
         if (!cancelled) setAnnotationChanges(changes);
       })
       .finally(() => {
-        if (!cancelled) setAnnotationChangesLoaded(true);
+        if (!cancelled) { setAnnotationChangesLoaded(true); markPdfOpen(id, 'annotationsReady'); }
       });
     return () => {
       cancelled = true;
@@ -275,7 +295,9 @@ export default function LibraryDocumentPage() {
 
       if (!manifestEntry?.cloudFileId) throw new Error("Google Drive does not contain the restored file for this document.");
       setStatus("downloading");
+      markPdfOpen(id, 'networkStart');
       const blob = await downloadDriveFileBlob(token.accessToken, manifestEntry.cloudFileId, attachment.mimeType);
+      markPdfOpen(id, 'networkComplete');
       assertGoogleDriveSession(token, accountId);
       void saveLocalAttachmentBlob(attachment.id, blob).catch(() => undefined);
       const nextUrl = URL.createObjectURL(blob);
@@ -319,12 +341,14 @@ export default function LibraryDocumentPage() {
 
   useEffect(() => {
     if (!attachment || attachment.id !== id || status !== "idle" || checkedLocalAttachmentId.current === attachment.id) return;
+    markPdfOpen(id, 'metadataReady');
     checkedLocalAttachmentId.current = attachment.id;
     let cancelled = false;
 
     void loadLocalAttachmentBlob(attachment.id)
       .then((blob) => {
         if (cancelled) return;
+        markPdfOpen(id, 'localBlobReady', {localByteCacheHit: Boolean(blob)});
         if (blob) {
           const nextUrl = URL.createObjectURL(blob);
           setFileUrl((current) => {
@@ -394,6 +418,7 @@ export default function LibraryDocumentPage() {
               initialPageIndex={initialReaderState?.pageIndex ?? 0}
               initialZoom={initialReaderState?.zoom ?? 1}
               annotations={annotations}
+              studyLinks={studyLinks}
               libraryFolderId={attachment.libraryFolderId}
               onReadingProgressChange={handleReadingProgressChange}
               onUpsertAnnotation={handleUpsertAnnotation}

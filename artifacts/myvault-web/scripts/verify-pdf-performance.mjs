@@ -142,6 +142,7 @@ for (const fixturePath of fixturePaths) {
   await page.getByTestId("pdf-reader").waitFor({ timeout: 120000 });
   const totalLabel = page.locator('[aria-label$="total pages"]');
   await totalLabel.waitFor({ timeout: 120000 });
+  await page.waitForFunction(() => Number.parseInt(document.querySelector('[aria-label$="total pages"]')?.getAttribute('aria-label') ?? '0', 10) > 0, null, {timeout:120000});
   const totalText = await totalLabel.getAttribute("aria-label");
   const pageCount = Number.parseInt(totalText ?? "", 10);
   assert.ok(pageCount > 0, `Could not read fixture page count from ${totalText}.`);

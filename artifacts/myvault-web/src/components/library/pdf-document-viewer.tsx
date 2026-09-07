@@ -1,6 +1,13 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ChevronLeft, ChevronRight, Download, Highlighter, Loader2, Maximize2, MessageSquarePlus, MessageSquareText, Pencil, Trash2, ZoomIn, ZoomOut } from "lucide-react";
-import { Document, Page, pdfjs } from "react-pdf";
+import { ChevronLeft, ChevronRight, Download, Highlighter, Link as LinkIcon, X, Loader2, Maximize2, MessageSquarePlus, MessageSquareText, Pencil, Trash2, ZoomIn, ZoomOut } from "lucide-react";
+import { Link } from 'wouter';
+import { Page, pdfjs } from "react-pdf";
+import type { PDFDocumentProxy } from "pdfjs-dist";
+import DocumentContext from "react-pdf/dist/DocumentContext.js";
+import LinkService from "react-pdf/dist/LinkService.js";
+import { acquirePdfDocument } from "./pdf-document-cache";
+import { markPdfOpen } from './pdf-open-timing';
+import { annotationBounds, PdfAnnotationPreview, retainAnnotationPreviews } from "./pdf-annotation-preview";
 import "react-pdf/dist/Page/AnnotationLayer.css";
 import "react-pdf/dist/Page/TextLayer.css";
 import { Button } from "@/components/ui/button";
@@ -23,6 +30,7 @@ type PdfDocumentViewerProps = {
   initialPageIndex?: number;
   initialZoom?: number;
   annotations?: RestoredPdfAnnotation[];
+  studyLinks?: Array<{id: string; noteId: string; title: string; pageIndex: number}>;
   onReadingProgressChange?: (progress: PdfReaderProgress) => void;
   libraryFolderId?: string | null;
   onUpsertAnnotation?: (annotation: RestoredPdfAnnotation) => void | Promise<void>;
@@ -137,6 +145,7 @@ const PdfPageAnnotations = memo(function PdfPageAnnotations({ annotations, pageW
         return (
           <div
             key={annotation.id}
+            id={`pdf-emphasis-${annotation.id}`}
             data-testid={`pdf-annotation-overlay-${annotation.id}`}
             className={isTextBox ? "overflow-hidden rounded-sm border border-slate-500/20 px-1.5 py-1 leading-tight text-slate-950 shadow-sm" : "rounded-[2px] mix-blend-multiply"}
             style={{
@@ -200,29 +209,32 @@ type LoadedPdfPage = {
   getViewport: (options: { scale: number }) => { width: number; height: number };
 };
 
-type LoadedPdfDocument = {
-  numPages: number;
-  getPage: (pageNumber: number) => Promise<LoadedPdfPage>;
-};
-
 const StablePdfCanvasPage = memo(function StablePdfCanvasPage({
+  document,
+  attachmentId,
   pageNumber,
+  isCurrent,
   pageWidth,
   estimatedPageHeight,
   onPageLoad,
 }: {
+  document: PDFDocumentProxy;
+  attachmentId: string;
   pageNumber: number;
+  isCurrent: boolean;
   pageWidth: number;
   estimatedPageHeight: number;
   onPageLoad: (pageNumber: number, page: LoadedPdfPage) => void;
 }) {
   return (
     <Page
+      pdf={document}
       pageNumber={pageNumber}
       width={pageWidth}
       renderAnnotationLayer
       renderTextLayer
-      onLoadSuccess={(page) => onPageLoad(pageNumber, page)}
+      onLoadSuccess={(page) => { onPageLoad(pageNumber, page); if (isCurrent) markPdfOpen(attachmentId, 'pageParsed'); }}
+      onRenderSuccess={() => { if (isCurrent) markPdfOpen(attachmentId, 'pageVisible', {renderedPage: pageNumber}); }}
       loading={<div className="animate-pulse bg-white shadow-sm" style={{ width: pageWidth, height: estimatedPageHeight }} />}
       className="overflow-hidden bg-white shadow-[0_8px_30px_rgba(15,23,42,0.14)]"
     />
@@ -236,6 +248,7 @@ export function PdfDocumentViewer({
   initialPageIndex = 0,
   initialZoom = 1,
   annotations = [],
+  studyLinks = [],
   onReadingProgressChange,
   libraryFolderId = null,
   onUpsertAnnotation,
@@ -249,6 +262,12 @@ export function PdfDocumentViewer({
   const currentPageRef = useRef(1);
   const pageSizesRef = useRef<Record<number, { width: number; height: number }>>({});
   const numPagesRef = useRef(0);
+  const [pdfDocument, setPdfDocument] = useState<PDFDocumentProxy | null>(null);
+  const [documentIdentity, setDocumentIdentity] = useState("");
+  const [annotationFilter, setAnnotationFilter] = useState("all");
+  const [expandedNotes, setExpandedNotes] = useState<Set<string>>(() => new Set());
+  const [thisPageOnly, setThisPageOnly] = useState(false);
+  const exactTarget = useRef<RestoredPdfAnnotation | null>(null);
   const [viewportWidth, setViewportWidth] = useState(0);
   const [numPages, setNumPages] = useState(0);
   const [pageNumber, setPageNumber] = useState(1);
@@ -270,7 +289,23 @@ export function PdfDocumentViewer({
   const [deleteCandidate, setDeleteCandidate] = useState<RestoredPdfAnnotation | null>(null);
   const [annotationSaveState, setAnnotationSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
 
+  const scrollToTarget = useCallback((targetPage: number, behavior: ScrollBehavior = "auto") => {
+    const viewport = viewportRef.current;
+    const page = pageRefs.current.get(targetPage);
+    scrollPdfPageIntoView(viewport, page, behavior);
+    const annotation = exactTarget.current;
+    const size = pageSizesRef.current[targetPage];
+    if (!viewport || !page || !size || annotation?.pageIndex !== targetPage - 1) return;
+    const bounds = annotationBounds(annotation, size.width, size.height);
+    const scale = page.clientWidth / size.width;
+    const regionTop = page.getBoundingClientRect().top - viewport.getBoundingClientRect().top + viewport.scrollTop + bounds.y * scale;
+    viewport.scrollTo({top: Math.max(0, regionTop - Math.max(24, (viewport.clientHeight - Math.min(bounds.height * scale, viewport.clientHeight * 0.7)) / 2)), behavior});
+    const overlay = window.document.getElementById(`pdf-emphasis-${annotation.id}`);
+    overlay?.animate([{outline:'3px solid #2563eb'}, {outline:'3px solid transparent'}], {duration:900});
+  }, []);
+
   currentPageRef.current = pageNumber;
+  useEffect(() => { markPdfOpen(attachmentId, 'viewerShell'); }, [attachmentId]);
 
   const clearProgrammaticTargetWhenMeasured = useCallback((targetPage: number) => {
     const firstPage = Math.max(1, targetPage - PAGE_RENDER_RADIUS);
@@ -279,26 +314,29 @@ export function PdfDocumentViewer({
       if (!pageSizesRef.current[page]) return;
     }
     requestAnimationFrame(() => {
-      scrollPdfPageIntoView(viewportRef.current, pageRefs.current.get(targetPage), "auto");
+      scrollToTarget(targetPage);
       requestAnimationFrame(() => {
         if (programmaticTargetPage.current === targetPage) programmaticTargetPage.current = null;
       });
     });
-  }, []);
+  }, [scrollToTarget]);
 
   const settleProgrammaticPage = useCallback((targetPage: number) => {
     programmaticTargetPage.current = targetPage;
     requestAnimationFrame(() => {
-      scrollPdfPageIntoView(viewportRef.current, pageRefs.current.get(targetPage), "auto");
+      scrollToTarget(targetPage);
     });
     clearProgrammaticTargetWhenMeasured(targetPage);
-  }, [clearProgrammaticTargetWhenMeasured]);
+  }, [clearProgrammaticTargetWhenMeasured, scrollToTarget]);
 
   useLayoutEffect(() => {
     const viewport = viewportRef.current;
     if (!viewport) return;
 
-    const updateWidth = () => setViewportWidth(Math.max(viewport.clientWidth, 320));
+    const updateWidth = () => {
+      if (numPagesRef.current) programmaticTargetPage.current = currentPageRef.current;
+      setViewportWidth(Math.max(viewport.clientWidth, 320));
+    };
     updateWidth();
     window.addEventListener("resize", updateWidth);
     return () => window.removeEventListener("resize", updateWidth);
@@ -359,6 +397,7 @@ export function PdfDocumentViewer({
   }, [annotationSaveState]);
 
   const setPage = (nextPage: number, behavior: ScrollBehavior = "smooth") => {
+    exactTarget.current = null;
     const boundedPage = Math.max(1, Math.min(nextPage, numPages || 1));
     settleProgrammaticPage(boundedPage);
     setPageNumber(boundedPage);
@@ -373,6 +412,10 @@ export function PdfDocumentViewer({
 
   const fitWidth = Math.max(280, Math.min((viewportWidth || 900) - 48, 980));
   const pageWidth = Math.round(fitWidth * zoom);
+  useLayoutEffect(() => {
+    if (numPagesRef.current) settleProgrammaticPage(currentPageRef.current);
+  }, [pageWidth, settleProgrammaticPage]);
+  useEffect(() => { retainAnnotationPreviews(documentIdentity, annotations); }, [documentIdentity, annotations]);
   const displayedZoom = previewZoom ?? zoom;
   const pages = useMemo(() => Array.from({ length: numPages }, (_, index) => index + 1), [numPages]);
   const renderedPages = useMemo(() => {
@@ -412,10 +455,48 @@ export function PdfDocumentViewer({
     }
     const targetPage = programmaticTargetPage.current;
     if (targetPage !== null) {
-      requestAnimationFrame(() => scrollPdfPageIntoView(viewportRef.current, pageRefs.current.get(targetPage), "auto"));
+      requestAnimationFrame(() => scrollToTarget(targetPage));
       clearProgrammaticTargetWhenMeasured(targetPage);
     }
-  }, [clearProgrammaticTargetWhenMeasured]);
+  }, [clearProgrammaticTargetWhenMeasured, scrollToTarget]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let release: (() => void) | undefined;
+    setPdfDocument(null);
+    void acquirePdfDocument(attachmentId, fileUrl).then(async (lease) => {
+      release = lease.release;
+      if (cancelled) { release(); return; }
+      const first = await lease.document.getPage(1);
+      if (cancelled) return;
+      handlePageLoad(1, first);
+      numPagesRef.current = lease.document.numPages;
+      setNumPages(lease.document.numPages);
+      setDocumentIdentity(lease.key);
+      setPdfDocument(lease.document);
+      markPdfOpen(attachmentId, 'documentReady', lease.timing);
+      performance.clearMeasures('myvault-pdf-initialized');
+      performance.measure('myvault-pdf-initialized', {start: performance.now() - lease.timing.initMs, detail: lease.timing});
+    }).catch(cause => { if (!cancelled) setError(cause instanceof Error ? cause.message : 'Unable to open PDF'); });
+    return () => { cancelled = true; release?.(); };
+  }, [attachmentId, fileUrl, handlePageLoad]);
+
+  const openAnnotation = (annotation: RestoredPdfAnnotation) => {
+    setPage(annotation.pageIndex + 1, "auto");
+    exactTarget.current = annotation;
+    if (window.innerWidth < 768) setShowAnnotationPanel(false);
+    requestAnimationFrame(() => scrollToTarget(annotation.pageIndex + 1));
+  };
+  const documentContext = useMemo(() => {
+    if (!pdfDocument) return null;
+    const linkService = new LinkService();
+    linkService.setDocument(pdfDocument);
+    linkService.setViewer({ scrollPageIntoView: ({pageNumber: target}) => {
+      exactTarget.current = null;
+      setPageNumber(target); setPageInput(String(target)); settleProgrammaticPage(target);
+    }});
+    return {pdf: pdfDocument, linkService, registerPage: () => undefined, unregisterPage: () => undefined};
+  }, [pdfDocument, settleProgrammaticPage]);
 
   useEffect(() => {
     const viewport = viewportRef.current;
@@ -522,6 +603,7 @@ export function PdfDocumentViewer({
       bottom: existing?.bottom ?? 0,
       color: editorColor,
       noteText: editorText.trim() || null,
+      selectedText: existing?.selectedText,
       annotationType,
       textSize: Math.max(10, Math.min(36, editorTextSize)),
       backgroundColor: annotationType === "text_box" ? editorBackgroundColor : existing?.backgroundColor ?? "none",
@@ -608,7 +690,7 @@ export function PdfDocumentViewer({
   };
 
   return (
-    <section className="relative flex h-[calc(100vh-150px)] min-h-[620px] flex-col overflow-hidden rounded-lg bg-slate-100 shadow-[0_1px_3px_rgba(15,23,42,0.08)]" data-testid="pdf-reader">
+    <section className="relative flex h-[calc(100dvh-180px)] min-h-[420px] flex-col overflow-hidden rounded-lg bg-slate-100 shadow-[0_1px_3px_rgba(15,23,42,0.08)] md:h-[calc(100vh-150px)] md:min-h-[620px]" data-testid="pdf-reader">
       <div className="flex h-12 shrink-0 items-center justify-between gap-3 bg-white/95 px-3 shadow-[0_1px_0_rgba(15,23,42,0.08)] backdrop-blur-sm">
         <div className="flex items-center gap-1">
           <IconAction label="Previous page" disabled={pageNumber <= 1} onClick={() => setPage(pageNumber - 1)}>
@@ -680,7 +762,7 @@ export function PdfDocumentViewer({
               <MessageSquarePlus className="h-4 w-4" />
             </IconAction>
           ) : null}
-          {annotations.length > 0 ? (
+          {annotations.length + studyLinks.length > 0 ? (
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
@@ -742,22 +824,9 @@ export function PdfDocumentViewer({
               className="origin-top will-change-transform"
               style={{ transform: previewZoom === null ? undefined : `scale(${previewZoom / zoom})` }}
             >
-              <Document
-                key={fileUrl}
-                file={fileUrl}
-                onLoadSuccess={(document: LoadedPdfDocument) => {
-                  void document.getPage(1)
-                    .then((firstPage) => {
-                      handlePageLoad(1, firstPage);
-                      numPagesRef.current = document.numPages;
-                      setNumPages(document.numPages);
-                    })
-                    .catch((cause) => setError(cause instanceof Error ? cause.message : "The first PDF page could not be read."));
-                }}
-                onLoadError={(cause) => setError(cause.message || "The document appears to be damaged or unsupported.")}
-                loading={<div className="flex min-h-[420px] items-center justify-center"><Loader2 className="h-6 w-6 animate-spin text-primary" /></div>}
-                className="mx-auto flex w-max flex-col gap-6"
-              >
+              <DocumentContext.Provider value={documentContext}>
+              <div className="mx-auto flex w-max flex-col gap-6">
+              {!pdfDocument ? <div className="flex min-h-[420px] items-center justify-center"><Loader2 className="h-6 w-6 animate-spin text-primary" /></div> : null}
               {pages.map((page) => {
                 const sourceSize = pageSizes[page];
                 const closestKnownSize = sourceSize
@@ -779,8 +848,8 @@ export function PdfDocumentViewer({
                     className="relative scroll-mt-7"
                     style={{ width: pageWidth, minHeight: estimatedPageHeight + 24 }}
                   >
-                    {shouldRender ? (
-                      <StablePdfCanvasPage pageNumber={page} pageWidth={pageWidth} estimatedPageHeight={estimatedPageHeight} onPageLoad={handlePageLoad} />
+                    {shouldRender && pdfDocument ? (
+                      <StablePdfCanvasPage attachmentId={attachmentId} document={pdfDocument} pageNumber={page} isCurrent={page === pageNumber} pageWidth={pageWidth} estimatedPageHeight={estimatedPageHeight} onPageLoad={handlePageLoad} />
                     ) : (
                       <div
                         className="bg-white shadow-[0_8px_30px_rgba(15,23,42,0.08)]"
@@ -820,40 +889,50 @@ export function PdfDocumentViewer({
                   </div>
                 );
               })}
-              </Document>
+              </div>
+              </DocumentContext.Provider>
             </div>
           )}
         </div>
 
-        {showAnnotationPanel && annotations.length > 0 ? (
-          <aside className="absolute bottom-0 right-0 top-12 z-30 w-72 shrink-0 overflow-y-auto border-l border-border/60 bg-card/95 px-4 py-5 shadow-[-8px_0_24px_rgba(15,23,42,0.08)] backdrop-blur-sm" data-testid="pdf-annotations-panel">
+        {showAnnotationPanel && annotations.length + studyLinks.length > 0 ? (
+          <aside className="absolute bottom-0 left-0 right-0 z-30 max-h-[65%] overflow-y-auto overscroll-contain rounded-t-lg border border-border/60 bg-card px-4 py-4 shadow-lg md:left-auto md:top-12 md:max-h-none md:w-80 md:rounded-none" data-testid="pdf-annotations-panel">
             <div className="flex items-center gap-2">
               <Highlighter className="h-4 w-4 text-primary" />
               <h2 className="text-sm font-semibold text-foreground">Annotations</h2>
             </div>
             <p className="mt-1 text-xs text-muted-foreground">{annotations.length} in this document</p>
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <select aria-label="Annotation filter" value={annotationFilter} onChange={event => setAnnotationFilter(event.target.value)} className="min-w-0 rounded border bg-background px-2 py-1.5 text-xs">
+                <option value="all">All</option><option value="highlight">Highlights</option><option value="notes">Notes</option><option value="links">Study links</option>
+              </select>
+              <select aria-label="Annotation page scope" value={thisPageOnly ? 'page' : 'all'} onChange={event => setThisPageOnly(event.target.value === 'page')} className="rounded border bg-background px-2 py-1.5 text-xs"><option value="all">All pages</option><option value="page">This page</option></select>
+              <button type="button" aria-label="Close annotations" onClick={() => setShowAnnotationPanel(false)} className="ml-auto p-2 text-sm"><X className="h-4 w-4" /></button>
+            </div>
             <div className="mt-4 space-y-2">
-              {sortedAnnotations.map((annotation) => (
-                <div key={annotation.id} className="group relative rounded-md bg-background/70 transition-colors hover:bg-background">
+              {sortedAnnotations.filter(annotation => (!thisPageOnly || annotation.pageIndex === pageNumber - 1) && (annotationFilter === 'all' || annotationFilter === 'highlight' && annotation.annotationType === 'highlight' || annotationFilter === 'notes' && (annotation.annotationType !== 'highlight' || Boolean(annotation.noteText)))).map((annotation) => (
+                <div key={annotation.id} className="group relative border-b border-border/60 pb-3">
                   <button
                     type="button"
                     data-testid={`pdf-annotation-${annotation.id}`}
-                    onClick={() => setPage(annotation.pageIndex + 1)}
-                    className="block w-full px-3 py-2.5 pr-16 text-left"
+                    onClick={() => openAnnotation(annotation)}
+                    className="block w-full py-2.5 text-left"
                   >
                     <span className="flex items-center justify-between gap-2">
                       <span className="truncate text-xs font-semibold text-foreground">{annotation.displayTitle || annotationTypeLabel(annotation)}</span>
                       <span className="shrink-0 text-[10px] font-medium text-muted-foreground">Page {annotation.pageIndex + 1}</span>
                     </span>
-                    {annotation.noteText ? <span className="mt-1.5 line-clamp-3 block text-xs leading-5 text-muted-foreground">{annotation.noteText}</span> : null}
+                    {annotation.selectedText?.trim() ? <span className="mt-2 block whitespace-pre-wrap break-words text-sm leading-6">{annotation.selectedText}</span> : annotation.annotationType === 'highlight' && pdfDocument ? <PdfAnnotationPreview document={pdfDocument} identity={documentIdentity} annotation={annotation} /> : null}
+                    {annotation.noteText ? <span className={`mt-2 whitespace-pre-wrap break-words text-sm leading-6 text-muted-foreground ${!expandedNotes.has(annotation.id) && annotation.noteText.length > 600 ? 'line-clamp-6' : 'block'}`}>{annotation.noteText}</span> : null}
                   </button>
+                  {annotation.noteText && annotation.noteText.length > 600 ? <button type="button" aria-expanded={expandedNotes.has(annotation.id)} className="mb-2 block text-xs font-medium text-primary" onClick={() => setExpandedNotes(current => { const next = new Set(current); if (next.has(annotation.id)) next.delete(annotation.id); else next.add(annotation.id); return next; })}>{expandedNotes.has(annotation.id) ? 'Show less' : 'Read full note'}</button> : null}
                   {onUpsertAnnotation ? (
                     <button
                       type="button"
                       aria-label={`Edit ${annotation.displayTitle || annotationTypeLabel(annotation)}`}
                       data-testid={`pdf-annotation-edit-${annotation.id}`}
                       onClick={() => openAnnotationEditor({ mode: "edit", pageIndex: annotation.pageIndex, annotation })}
-                      className="absolute right-8 top-2 flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground opacity-70 hover:bg-muted hover:text-foreground group-hover:opacity-100"
+                      className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
                     >
                       <Pencil className="h-3.5 w-3.5" />
                     </button>
@@ -864,13 +943,18 @@ export function PdfDocumentViewer({
                       aria-label={`Delete ${annotation.displayTitle || annotationTypeLabel(annotation)}`}
                       data-testid={`pdf-annotation-delete-${annotation.id}`}
                       onClick={() => setDeleteCandidate(annotation)}
-                      className="absolute right-1 top-2 flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground opacity-70 hover:bg-red-50 hover:text-red-700 group-hover:opacity-100"
+                      className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-red-50 hover:text-red-700"
                     >
                       <Trash2 className="h-3.5 w-3.5" />
                     </button>
                   ) : null}
                 </div>
               ))}
+              {(annotationFilter === 'all' || annotationFilter === 'links') && studyLinks.filter(link => !thisPageOnly || link.pageIndex === pageNumber - 1).map(link => <div key={link.id} className="border-b py-3 text-sm">
+                <div className="flex items-start gap-2"><LinkIcon className="mt-1 h-4 w-4 shrink-0 text-primary" /><span className="break-words font-medium">{link.title}</span></div>
+                <p className="my-2 text-xs text-muted-foreground">Study link · Page {link.pageIndex + 1}</p>
+                <Link href={`/notes/${encodeURIComponent(link.noteId)}`} className="text-xs font-medium text-primary">Open note →</Link>
+              </div>)}
             </div>
           </aside>
         ) : null}

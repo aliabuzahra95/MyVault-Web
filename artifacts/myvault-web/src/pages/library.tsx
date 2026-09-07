@@ -183,8 +183,9 @@ export default function LibraryPage() {
   const [manageError, setManageError] = useState<string | null>(null);
   const [isManaging, setIsManaging] = useState(false);
   const [showDeleteConfirmation, setShowDeleteConfirmation] = useState(false);
-  const { data: folders = [], isLoading: foldersLoading } = useListFolders({ workspace, mode: "library" });
-  const { data: attachments = [], isLoading: attachmentsLoading } = useListAttachments(showPinned ? { isPinned: true } : {});
+  // These endpoints project IndexedDB data; offline status must not pause local PDF access.
+  const { data: folders = [], isLoading: foldersLoading } = useListFolders({ workspace, mode: "library" }, { query: { queryKey: getListFoldersQueryKey({ workspace, mode: "library" }), networkMode: "always" } });
+  const { data: attachments = [], isLoading: attachmentsLoading } = useListAttachments(showPinned ? { isPinned: true } : {}, { query: { queryKey: getListAttachmentsQueryKey(showPinned ? { isPinned: true } : {}), networkMode: "always" } });
   const isLoading = foldersLoading || attachmentsLoading;
 
   const filteredAttachments = useMemo(() => {

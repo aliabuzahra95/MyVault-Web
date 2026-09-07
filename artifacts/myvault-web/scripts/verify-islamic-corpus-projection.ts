@@ -52,7 +52,7 @@ const files = [
     { attachmentId: "personal-pdf", progressPercent: 0.5 },
   ]),
   file("pdf_annotations.json", [
-    { id: "islamic-highlight", attachmentId: "library-pdf", annotationType: "highlight", left: 0, top: 0, right: 1, bottom: 1 },
+    { id: "islamic-highlight", attachmentId: "library-pdf", annotationType: "highlight", left: 0, top: 0, right: 1, bottom: 1, selectedText: "Saved source text" },
     { id: "personal-highlight", attachmentId: "personal-pdf", annotationType: "highlight", left: 0, top: 0, right: 1, bottom: 1 },
   ]),
   file("source_backlinks.json", []),
@@ -96,6 +96,7 @@ assert.deepEqual(ids("folders.json"), ["study", "library", "course-root", "cours
 assert.deepEqual(ids("notes.json"), ["root-note", "study-note", "course-note"]);
 assert.deepEqual(ids("attachments.json"), ["root-pdf", "library-pdf"]);
 assert.deepEqual(ids("pdf_annotations.json"), ["islamic-highlight"]);
+assert.equal(corpus.pdfAnnotations.find(annotation => annotation.id === "islamic-highlight")?.selectedText, "Saved source text");
 assert.deepEqual(ids("knowledge_tags.json"), ["kt-islamic"]);
 assert.deepEqual(ids("courses.json"), ["course-islamic"]);
 assert.equal(corpus.courses[0]?.noteCount, 1);
