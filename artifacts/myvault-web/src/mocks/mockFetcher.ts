@@ -1,6 +1,8 @@
 import type { Attachment, Folder, HomeSnapshot, Note, SearchResults } from "@workspace/api-client-react";
 import { loadRestoredCorpus } from "@/lib/restore/restoredCorpus";
 import type { LocalPdfReaderState } from "@/lib/restore/localRestoreStore";
+import { projectRecordSyncRevisions } from "@/lib/recordSync/projection";
+import { loadRecordSyncControl, loadRecordSyncPending, loadRecordSyncRecords, mayHaveRecordSyncEnabled } from "@/lib/recordSync/store";
 import {
   deleteLocalCreatedFolder,
   deleteLocalCreatedNote,
@@ -55,8 +57,6 @@ const emptyHomeSnapshot: HomeSnapshot = {
   },
 };
 
-const emptySearchResults: SearchResults = { query: "", items: [] };
-
 let nextId = 9000;
 function uid(): string {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) return `web-${crypto.randomUUID()}`;
@@ -94,6 +94,22 @@ export function installMockFetcher(): void {
       loadLocalCreatedAttachments().catch(() => [] as Attachment[]),
       loadLocalPdfReaderStates().catch(() => [] as LocalPdfReaderState[]),
     ]);
+    const syncControl = mayHaveRecordSyncEnabled() ? await loadRecordSyncControl() : null;
+    const recordSyncActive = Boolean(syncControl?.cursor && !syncControl.paused);
+    const [syncRevisions, syncPending] = recordSyncActive
+      ? await Promise.all([loadRecordSyncRecords(), loadRecordSyncPending()])
+      : [[], []];
+    const projected = projectRecordSyncRevisions({
+      folders: restoredCorpus?.folders ?? [],
+      notes: restoredCorpus?.notes ?? [],
+      noteDetails: restoredCorpus?.noteDetails ?? {},
+      localFolders: createdFolders,
+      localNotes: createdNotes,
+      revisions: syncRevisions,
+      pending: syncPending,
+    });
+    const allFolders = projected.folders;
+    const allNotes = projected.notes;
     const readerStateByAttachment = new Map(readerStates.map((state) => [state.attachmentId, state]));
     const applyReaderState = (attachment: Attachment) => {
       const readerState = readerStateByAttachment.get(attachment.id);
@@ -112,21 +128,21 @@ export function installMockFetcher(): void {
       const sp = getSearchParams(apiPath.includes("?") ? apiPath : url);
       const workspace = sp.get("workspace");
       const mode = sp.get("mode");
-      let result = mergeById(restoredCorpus?.folders ?? [], createdFolders);
+      let result = allFolders;
       if (workspace) result = result.filter(f => f.workspace === workspace);
       if (mode && mode !== "all") result = result.filter(f => f.mode === mode);
       return jsonResponse(result);
     }
     if (apiPath === "/folders" && method === "POST") {
       const body = JSON.parse(init?.body as string ?? "{}");
-      const folder: Folder = { id: uid(), parentId: body.parentId ?? null, title: body.title, description: body.description ?? null, mode: body.mode ?? "study", workspace: body.workspace ?? null, orderIndex: (restoredCorpus?.folders.length ?? 0) + createdFolders.length, noteCount: 0, createdAt: Date.now(), updatedAt: Date.now() };
+      const folder: Folder = { id: uid(), parentId: body.parentId ?? null, title: body.title, description: body.description ?? null, mode: body.mode ?? "study", workspace: body.workspace ?? null, orderIndex: allFolders.length, noteCount: 0, createdAt: Date.now(), updatedAt: Date.now() };
       await saveLocalCreatedFolder(folder);
       return jsonResponse(folder, 201);
     }
     const folderById = matchPath(apiPath, "/folders/:id");
     if (folderById) {
       const { id } = folderById;
-      const folderSource = mergeById(restoredCorpus?.folders ?? [], createdFolders);
+      const folderSource = allFolders;
       const idx = folderSource.findIndex(f => f.id === id);
       if (method === "GET") {
         if (idx < 0) return jsonResponse({ error: "Not found" }, 404);
@@ -151,14 +167,14 @@ export function installMockFetcher(): void {
       const sp = getSearchParams(url);
       const folderId = sp.get("folderId");
       const isPinned = sp.get("isPinned");
-      let result = mergeById(restoredCorpus?.notes ?? [], createdNotes);
+      let result = allNotes;
       if (folderId) result = result.filter(n => n.folderId === folderId);
       if (isPinned === "true") result = result.filter(n => n.isPinned);
       return jsonResponse(result);
     }
     if (apiPath === "/notes" && method === "POST") {
       const body = JSON.parse(init?.body as string ?? "{}");
-      const note: Note = { id: uid(), folderId: body.folderId ?? null, parentNoteId: body.parentNoteId ?? null, title: body.title, bodyPreview: null, wordCount: 0, characterCount: 0, isPinned: false, isFolderPinned: false, orderIndex: (restoredCorpus?.notes.length ?? 0) + createdNotes.length, tagNames: [], createdAt: Date.now(), updatedAt: Date.now() };
+      const note: Note = { id: uid(), folderId: body.folderId ?? null, parentNoteId: body.parentNoteId ?? null, title: body.title, bodyPreview: null, wordCount: 0, characterCount: 0, isPinned: false, isFolderPinned: false, orderIndex: allNotes.length, tagNames: [], createdAt: Date.now(), updatedAt: Date.now() };
       await saveLocalCreatedNote(note);
       return jsonResponse(note, 201);
     }
@@ -169,7 +185,7 @@ export function installMockFetcher(): void {
     }
     const noteTagNames = matchPath(apiPath, "/notes/:id/tags");
     if (noteTagNames) {
-      const noteSource = mergeById(restoredCorpus?.notes ?? [], createdNotes);
+      const noteSource = allNotes;
       if (method === "GET") {
         const note = noteSource.find(n => n.id === noteTagNames.id);
         return jsonResponse(note?.tagNames ?? []);
@@ -190,12 +206,12 @@ export function installMockFetcher(): void {
     const noteById = matchPath(apiPath, "/notes/:id");
     if (noteById) {
       const { id } = noteById;
-      const noteSource = mergeById(restoredCorpus?.notes ?? [], createdNotes);
+      const noteSource = allNotes;
       const idx = noteSource.findIndex(n => n.id === id);
       if (method === "GET") {
-        const detail = restoredCorpus?.noteDetails[id] ?? noteSource[idx] ?? null;
+        const detail = projected.noteDetails[id] ?? noteSource[idx] ?? null;
         if (!detail) return jsonResponse({ error: "Not found" }, 404);
-        const blocks = restoredCorpus?.noteDetails[id]?.blocks ?? [];
+        const blocks = projected.noteDetails[id]?.blocks ?? [];
         return jsonResponse({ ...detail, blocks });
       }
       if (method === "PATCH") {
@@ -240,9 +256,9 @@ export function installMockFetcher(): void {
     if (apiPath === "/search" || apiPath.startsWith("/search?")) {
       const sp = getSearchParams(url);
       const q = (sp.get("q") ?? "").toLowerCase();
-      const folderNames = new Map(mergeById(restoredCorpus?.folders ?? [], createdFolders).map((folder) => [folder.id, folder.title]));
+      const folderNames = new Map(allFolders.map((folder) => [folder.id, folder.title]));
       const localItems: SearchResults["items"] = [
-        ...createdNotes.map((note) => ({
+        ...(recordSyncActive ? allNotes : createdNotes).map((note) => ({
           type: "note" as const,
           id: note.id,
           title: note.title,
@@ -251,7 +267,7 @@ export function installMockFetcher(): void {
           folderTitle: note.folderId ? folderNames.get(note.folderId) ?? null : null,
           updatedAt: note.updatedAt,
         })),
-        ...createdAttachments.map((attachment) => ({
+        ...(recordSyncActive ? mergeById(restoredCorpus?.attachments ?? [], createdAttachments) : createdAttachments).map((attachment) => ({
           type: "attachment" as const,
           id: attachment.id,
           title: attachment.name,
@@ -261,14 +277,24 @@ export function installMockFetcher(): void {
           updatedAt: attachment.updatedAt,
         })),
       ];
-      let items = mergeById(restoredCorpus?.searchResults.items ?? emptySearchResults.items, localItems);
+      let items = recordSyncActive ? localItems : mergeById(restoredCorpus?.searchResults.items ?? [], localItems);
       if (q) items = items.filter(i => i.title.toLowerCase().includes(q) || (i.snippet ?? "").toLowerCase().includes(q));
       return jsonResponse({ query: q, items });
     }
 
     // ── Home ──────────────────────────────────────────────────────────────────
     if (apiPath === "/home/snapshot" || apiPath.startsWith("/home/snapshot?")) {
-      return jsonResponse(restoredCorpus?.homeSnapshot ?? emptyHomeSnapshot);
+      if (!recordSyncActive) return jsonResponse(restoredCorpus?.homeSnapshot ?? emptyHomeSnapshot);
+      const base = restoredCorpus?.homeSnapshot ?? emptyHomeSnapshot;
+      const recentNotes = [...allNotes].sort((a, b) => b.updatedAt - a.updatedAt);
+      return jsonResponse({
+        ...base,
+        recentNotes: recentNotes.slice(0, 5),
+        pinnedNotes: recentNotes.filter((note) => note.isPinned).slice(0, 5),
+        recentFolders: [...allFolders].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 4),
+        stats: { ...base.stats, totalNotes: allNotes.length, totalFolders: allFolders.length,
+          totalWordCount: allNotes.reduce((sum, note) => sum + (note.wordCount ?? 0), 0) },
+      });
     }
 
     // ── Knowledge Tags ────────────────────────────────────────────────────────

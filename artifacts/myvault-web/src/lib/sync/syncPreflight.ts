@@ -31,6 +31,8 @@ import {
   serializeVaultRichTextEnvelope,
   type VaultRichTextEnvelope,
 } from "@/lib/restore/vaultRichText";
+import { prepareRecordSyncBackup } from "@/lib/recordSync/backupSnapshot";
+import { getActiveAccountId } from "@/lib/sync/accountContext";
 
 type JsonRow = Record<string, unknown>;
 
@@ -732,5 +734,25 @@ export async function runSyncPreflight() {
     loadSyncPendingChanges(),
   ]);
   if (bundle) await reconcileLocalNoteDrafts(bundle);
-  return buildSyncPreflight(base?.bundle ?? bundle, pending, base?.revision.revisionId);
+  const source = base?.bundle ?? bundle;
+  const snapshotSource = source ?? createInitialMetadataRestoreBundle();
+  const recordSnapshot = await prepareRecordSyncBackup(snapshotSource, pending, base?.revision.revisionId, getActiveAccountId());
+  if (!source && !recordSnapshot.active) return buildSyncPreflight(null, pending);
+  const preflight = buildSyncPreflight(recordSnapshot.bundle, recordSnapshot.pending, base?.revision.revisionId);
+  if (preflight.status === "blocked") return preflight;
+  if (!recordSnapshot.touchedFiles.size) return !source && preflight.status === "ready"
+    ? { ...preflight, status: "initial_backup" as const }
+    : preflight;
+  const touchedFiles = [...preflight.touchedFiles];
+  for (const fileName of recordSnapshot.touchedFiles) {
+    if (touchedFiles.some((file) => file.fileName === fileName)) continue;
+    const original = snapshotSource.files.find((file) => file.fileName === fileName)?.json;
+    const merged = recordSnapshot.bundle.files.find((file) => file.fileName === fileName)?.json;
+    touchedFiles.push({
+      fileName, originalCount: Array.isArray(original) ? original.length : 0,
+      mergedCount: Array.isArray(merged) ? merged.length : 0,
+      changedRows: 0, addedRows: 0, removedRows: 0,
+    });
+  }
+  return { ...preflight, status: bundle ? "ready" as const : "initial_backup" as const, touchedFiles };
 }
