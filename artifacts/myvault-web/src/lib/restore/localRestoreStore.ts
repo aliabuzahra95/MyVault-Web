@@ -13,10 +13,7 @@ import {
 } from "@/lib/sync/accountContext";
 
 const DATABASE_NAME = "myvault-web-restore";
-const DATABASE_VERSION = 10;
-const RECORD_SYNC_CONTROL_STORE = "record-sync-control";
-const RECORD_SYNC_PENDING_STORE = "record-sync-pending";
-const RECORD_SYNC_HEADS_STORE = "record-sync-heads";
+const DATABASE_VERSION = 9;
 const METADATA_STORE = "metadata-bundles";
 const NOTE_DRAFT_STORE = "note-drafts";
 const CREATED_FOLDER_STORE = "created-folders";
@@ -239,7 +236,7 @@ function notifyLocalCourseChange() {
   notifyLocalContentChange();
 }
 
-export function openRestoreDatabase() {
+function openRestoreDatabase() {
   return new Promise<IDBDatabase>((resolve, reject) => {
     if (typeof indexedDB === "undefined") {
       reject(new Error("This browser does not support local restore storage."));
@@ -304,10 +301,6 @@ export function openRestoreDatabase() {
       if (!database.objectStoreNames.contains(ACCOUNT_META_STORE)) {
         database.createObjectStore(ACCOUNT_META_STORE);
       }
-      for (const name of [RECORD_SYNC_CONTROL_STORE, RECORD_SYNC_PENDING_STORE, RECORD_SYNC_HEADS_STORE,
-        "record-sync-files", "record-sync-records", "record-sync-conflicts"]) {
-        if (!database.objectStoreNames.contains(name)) database.createObjectStore(name);
-      }
     };
 
     request.onerror = () => {
@@ -326,40 +319,10 @@ function putForAccount<T>(storeName: string, id: string, value: T, accountId = g
 
 function putWithOperation<T>(storeName: string, id: string, value: T, entityType: string, operation: string, accountId = getActiveAccountId()) {
   const record: LocalSyncOperation = { schemaVersion: 1, id: newOperationId(), accountId, entityType, entityId: id, operation, createdAt: new Date().toISOString(), status: "pending" };
-  const recordSyncEnabled = (entityType === "note" || entityType === "folder") &&
-    typeof localStorage !== "undefined" && localStorage.getItem(`myvault-record-sync-enabled::${accountId}`) === "1";
-  const extraStores = recordSyncEnabled ? [RECORD_SYNC_CONTROL_STORE, RECORD_SYNC_PENDING_STORE, RECORD_SYNC_HEADS_STORE] : [];
   return runStoreTransaction(storeName, "readwrite", (store) => {
     store.transaction.objectStore(SYNC_JOURNAL_STORE).put(record, accountStorageKey(record.id, accountId));
-    if (recordSyncEnabled) {
-      const tx = store.transaction;
-      const control = tx.objectStore(RECORD_SYNC_CONTROL_STORE).get(accountId);
-      control.onsuccess = () => {
-        if (!control.result?.enabled) return;
-        const entityKey = accountStorageKey(`${entityType}:${id}`, accountId);
-        const pendingStore = tx.objectStore(RECORD_SYNC_PENDING_STORE);
-        const existing = pendingStore.get(entityKey);
-        const head = tx.objectStore(RECORD_SYNC_HEADS_STORE).get(entityKey);
-        let ready = 0;
-        const capture = () => {
-          if (++ready !== 2) return;
-          const previous = existing.result;
-          pendingStore.put({ accountId, entityType, entityId: id,
-            generation: (previous?.generation ?? 0) + 1,
-            changedAt: Date.now(),
-            baseRevisionId: previous?.baseRevisionId ?? head.result?.revisionId ?? null,
-            prepared: null, excludedReason: null,
-          }, entityKey);
-        };
-        existing.onsuccess = capture;
-        head.onsuccess = capture;
-      };
-    }
     return store.put(value, accountStorageKey(id, accountId));
-  }, accountId, extraStores).then(() => {
-    notifyLocalContentChange();
-    if (recordSyncEnabled && typeof window !== "undefined") window.dispatchEvent(new Event("myvault-record-sync-dirty"));
-  });
+  }, accountId).then(() => { notifyLocalContentChange(); });
 }
 
 function getForAccount<T>(storeName: string, id: string) {
@@ -705,14 +668,12 @@ export async function createLocalRecoverySnapshot(reason: string) {
   return snapshot;
 }
 
-function runStoreTransaction<T>(storeName: string, mode: IDBTransactionMode, callback: (store: IDBObjectStore) => IDBRequest<T>, accountId = getActiveAccountId(), extraStores: string[] = []) {
+function runStoreTransaction<T>(storeName: string, mode: IDBTransactionMode, callback: (store: IDBObjectStore) => IDBRequest<T>, accountId = getActiveAccountId()) {
   return new Promise<T>((resolve, reject) => {
     void openRestoreDatabase()
       .then((database) => {
         const tracksGeneration = mode === "readwrite" && [METADATA_STORE, SYNC_BASE_STORE, SYNC_JOURNAL_STORE, ATTACHMENT_BLOB_STORE, ...PENDING_LOCAL_CHANGE_STORES].includes(storeName);
-        const transaction = database.transaction([...new Set([
-          storeName, ...(tracksGeneration ? [ACCOUNT_META_STORE, SYNC_JOURNAL_STORE] : []), ...extraStores,
-        ])], mode);
+        const transaction = database.transaction(tracksGeneration ? [...new Set([storeName, ACCOUNT_META_STORE, SYNC_JOURNAL_STORE])] : storeName, mode);
         if (tracksGeneration) {
           const meta = transaction.objectStore(ACCOUNT_META_STORE);
           const key = accountStorageKey("vault-generation", accountId);

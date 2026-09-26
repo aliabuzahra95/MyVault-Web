@@ -355,7 +355,7 @@ export function useGoogleDriveConnection() {
     try {
       setState((current) => ({ ...current, status: "scanning", error: null }));
       const { session, value: refreshed } = await runWithVerifiedGoogleDriveSession(
-        ({ token, accountId }) => refreshLatestDriveMetadataSafely(token, accountId, true),
+        ({ token, accountId }) => refreshLatestDriveMetadataSafely(token, accountId),
         { interactive: true, onRenewing: () => setState((current) => ({ ...current, status: "renewing", error: null })) },
       );
       assertGoogleDriveSession(session.token, session.accountId);

@@ -889,38 +889,6 @@ try {
   assert.equal(JSON.parse(concurrentBlocks.find((block) => block.noteId === "web-first-note" && block.type === "rich_text").content).text, "Android concurrent body.");
   assert.equal(JSON.parse(concurrentBlocks.find((block) => block.noteId === recoveredConflictNote.id && block.type === "rich_text").content).text, "Website concurrent body.");
 
-  const recordBackedBackup = await firstPage.evaluate(async () => {
-    const store = await import("/src/lib/restore/localRestoreStore.ts");
-    const syncStore = await import("/src/lib/recordSync/store.ts");
-    const protocol = await import("/src/lib/recordSync/protocol.ts");
-    const preflight = await import("/src/lib/sync/syncPreflight.ts");
-    const writer = await import("/src/lib/sync/driveWriteBack.ts");
-    const accountId = "permission-account-c";
-    const note = {
-      id: "phone-synced-note", folderId: null, parentNoteId: null, title: "Arrived from phone",
-      bodyPlainText: "Arabic العربية", isPinned: false, isFolderPinned: false, isFavourite: false,
-      orderIndex: 0, createdAt: 600, updatedAt: 601, deletedAt: null,
-      richText: { text: "Arabic العربية", styleMarks: [{ start: 0, end: 6, style: "Bold" }], noteLinks: [] },
-      blocks: [],
-    };
-    const revision = await protocol.createRecordSyncRevision({ entityType: "note", entityId: note.id, clientId: "phone", parents: [], payload: note });
-    await syncStore.applyRecordSyncRevision(accountId, "disposable-sync-file", revision);
-    await syncStore.saveRecordSyncControl({ accountId, clientId: "web", enabled: true, paused: false, cursor: "disposable-cursor" });
-    const preview = await preflight.runSyncPreflight();
-    const result = await writer.writeWebsiteChangesToDrive({ accessToken: "mock-token" });
-    const localBundle = await store.loadMetadataRestoreBundle();
-    return { previewStatus: preview.status, result,
-      localNote: localBundle.files.find((file) => file.fileName === "notes.json").json.find((item) => item.id === note.id) };
-  });
-  assert.equal(recordBackedBackup.previewStatus, "ready");
-  assert.equal(recordBackedBackup.result.status, "uploaded");
-  assert.equal(recordBackedBackup.localNote?.title, "Arrived from phone");
-  const recordManifest = JSON.parse([...driveFiles.values()].find((file) => file.name === "sync_manifest.json").bytes.toString("utf8"));
-  const recordNotes = JSON.parse(driveFiles.get(recordManifest.entries.find((entry) => entry.fileName === "notes.json").cloudFileId).bytes.toString("utf8"));
-  const recordBlocks = JSON.parse(driveFiles.get(recordManifest.entries.find((entry) => entry.fileName === "blocks.json").cloudFileId).bytes.toString("utf8"));
-  assert.equal(recordNotes.find((note) => note.id === "phone-synced-note")?.title, "Arrived from phone");
-  assert.equal(JSON.parse(recordBlocks.find((block) => block.noteId === "phone-synced-note").content).styleMarks[0].style, "Bold");
-
   driveFiles.clear();
   uploadOrder.length = 0;
   mockPermissionId = "permission-account-d";
@@ -964,7 +932,7 @@ try {
   corruptReadbackName = null;
   assert.equal(deleteRequests, 0, "Failure recovery must retain every staging object.");
 
-  console.log("Browser sync contract verified: account isolation, locking, offline journalling, record-backed manual backup, manifest-last commit, and failed-upload recovery all passed.");
+  console.log("Browser sync contract verified: account isolation, locking, offline journalling, manifest-last commit, and failed-upload recovery all passed.");
 } finally {
   await browser.close();
 }

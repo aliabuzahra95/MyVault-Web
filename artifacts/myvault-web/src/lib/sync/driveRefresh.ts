@@ -9,8 +9,6 @@ import { withAccountSyncLock } from "@/lib/sync/accountContext";
 import { computeBundleRevision, computeManifestRevision } from "@/lib/sync/revision";
 import { applyIncomingDriveBundleSafely } from "@/lib/sync/safePull";
 import { ActiveEditorError, withLocalVaultUpdate } from "@/lib/sync/editorLease";
-import { pauseRecordSyncForRestore } from "@/lib/recordSync/engine";
-import { loadRecordSyncControl } from "@/lib/recordSync/store";
 
 export type DriveRefreshStatus = {
   phase: "idle" | "checking" | "downloading" | "validating" | "applying" | "current" | "staged" | "error";
@@ -38,26 +36,20 @@ export async function readDriveManifestPreview(accessToken: string) {
 }
 
 type RefreshResult = { scan: MyVaultDriveScan; manifestPreview: DriveManifestPreview | null; metadataRestore: MetadataRestoreBundle | null; staged: boolean };
-const active = new Map<string, { token: string; manualRestore: boolean; promise: Promise<RefreshResult> }>();
+const active = new Map<string, { token: string; promise: Promise<RefreshResult> }>();
 
-export function refreshLatestDriveMetadataSafely(token: GoogleDriveToken, accountId: string, manualRestore = false): Promise<RefreshResult> {
+export function refreshLatestDriveMetadataSafely(token: GoogleDriveToken, accountId: string): Promise<RefreshResult> {
   const existing = active.get(accountId);
-  if (existing?.token === token.accessToken && existing.manualRestore === manualRestore) return existing.promise;
+  if (existing?.token === token.accessToken) return existing.promise;
   const promise = withAccountSyncLock(accountId, async () => {
     assertGoogleDriveSession(token, accountId);
     update(accountId, { phase: "checking", error: null });
-    if (manualRestore) await pauseRecordSyncForRestore(accountId);
     const startingGeneration = await loadLocalVaultGeneration();
     const preview = await readDriveManifestPreview(token.accessToken);
     assertGoogleDriveSession(token, accountId);
     update(accountId, { checkedAt: Date.now() });
     if (preview.error) throw new Error(preview.error);
     const local = await loadMetadataRestoreBundle();
-    const recordSync = await loadRecordSyncControl(accountId);
-    if (!manualRestore && (recordSync?.enabled || recordSync?.restoreReconciliationRequired)) {
-      update(accountId, { phase: "current" });
-      return { ...preview, metadataRestore: local, staged: true };
-    }
     if (!preview.manifestPreview) {
       update(accountId, { phase: "idle" });
       return { ...preview, metadataRestore: local, staged: false };
@@ -102,7 +94,7 @@ export function refreshLatestDriveMetadataSafely(token: GoogleDriveToken, accoun
     update(accountId, { phase: "error", error: error instanceof Error ? error.message : "Drive is unavailable. Local data was preserved." });
     throw error;
   });
-  active.set(accountId, { token: token.accessToken, manualRestore, promise });
+  active.set(accountId, { token: token.accessToken, promise });
   void promise.finally(() => { if (active.get(accountId)?.promise === promise) active.delete(accountId); }).catch(() => undefined);
   return promise;
 }
