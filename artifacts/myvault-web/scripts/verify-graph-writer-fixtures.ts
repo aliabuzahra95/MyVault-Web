@@ -5,7 +5,7 @@ import { BackupGraph, reconstructBackupGraph } from "../src/lib/restore/backupGr
 
 const directory = process.env.MYVAULT_GRAPH_WRITER_FIXTURES;
 assert.ok(directory, "Set MYVAULT_GRAPH_WRITER_FIXTURES to Android disposable runtime output.");
-for (const name of ["linear", "binary", "fork"]) {
+for (const name of ["linear", "binary", "new-attachment", "fork"]) {
   const bundle = JSON.parse(readFileSync(join(directory, `${name}.json`), "utf8"));
   const bytes = (id: string) => {
     assert.ok(id in bundle.objects, `Missing immutable object ${id}`);
@@ -22,6 +22,11 @@ for (const name of ["linear", "binary", "fork"]) {
     assert.equal(notes.length, bundle.expectedNoteCount);
     assert.equal(notes.find((n) => n.id === "n")?.bodyPlainText, bundle.expectedBody);
     if (name === "binary") assert.equal(result.binaries!.find((b) => b.attachmentId === "pdf")?.size, 8192);
+    else if (name === "new-attachment") {
+      assert.equal(result.binaries!.length, 1);
+      assert.equal(result.binaries![0].attachmentId, "new-attachment");
+      assert.equal(result.binaries![0].size, 8192);
+    }
     else assert.ok(!notes.some((n) => n.id === "two"));
     assert.equal(graph.plan(graph.tips[0]).status, "ALREADY_CURRENT");
   }

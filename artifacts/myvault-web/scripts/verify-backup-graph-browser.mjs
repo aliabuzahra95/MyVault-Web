@@ -56,7 +56,7 @@ try {
     assert.deepEqual(results, JSON.parse(readFileSync(join(directory, `web-read-${origin}.json`), "utf8")));
   }
   if (process.env.MYVAULT_GRAPH_WRITER_FIXTURES) {
-    for (const name of ["linear", "binary", "fork"]) {
+    for (const name of ["linear", "binary", "new-attachment", "fork"]) {
       const bundle = JSON.parse(readFileSync(join(process.env.MYVAULT_GRAPH_WRITER_FIXTURES, `${name}.json`), "utf8"));
       await page.evaluate(async ({ bundle, name }) => {
         const api = window.MyVaultGraph;
@@ -69,10 +69,11 @@ try {
           const notes = result.files["notes.json"];
           if (notes.length !== bundle.expectedNoteCount || notes.find((n) => n.id === "n").bodyPlainText !== bundle.expectedBody) throw new Error("Writer note/deletion mismatch");
           if (name === "binary" && result.binaries.find((b) => b.attachmentId === "pdf").size !== 8192) throw new Error("Writer replacement mismatch");
+          if (name === "new-attachment" && (result.binaries.length !== 1 || result.binaries[0].attachmentId !== "new-attachment" || result.binaries[0].size !== 8192)) throw new Error("Writer new attachment mismatch");
         }
       }, { bundle, name });
     }
-    console.log("PASS Android disposable Room writer objects in fresh Chrome: linear, binary replacement and fork.");
+    console.log("PASS Android disposable Room writer objects in fresh Chrome: linear, binary replacement, new attachment and fork.");
   }
   assert.deepEqual(errors, []);
   console.log("PASS fresh Chrome WebCrypto/UTF-8 codec: all Android and Web cases agree with host readers, including 8192-byte replacement. No application storage, Drive, sign-in or user data.");
