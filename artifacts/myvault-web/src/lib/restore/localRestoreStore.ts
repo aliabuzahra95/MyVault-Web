@@ -6,6 +6,7 @@ import {
   type VaultRichTextDocument,
 } from "@/lib/restore/vaultRichText";
 import type { RestoredPdfAnnotation } from "@/lib/restore/restoredCorpus";
+import { permanentBackupOverlayDeletes } from "./permanentBackupDeletions";
 import {
   accountStorageKey,
   accountStorageRange,
@@ -568,7 +569,9 @@ export function applyMetadataRestorePreservingLocalChangesAtomically(
 ) {
   const accountId = getActiveAccountId();
   if (accountId !== nextBase.accountId) return Promise.reject(new Error("The Google account changed. The previous local vault was preserved."));
-  const stores = [METADATA_STORE, SYNC_BASE_STORE, SYNC_JOURNAL_STORE, ACCOUNT_META_STORE, ...PENDING_LOCAL_CHANGE_STORES];
+  const permanentDeletes = permanentBackupOverlayDeletes(bundle.incrementalBackupState?.permanentDeletions ?? []);
+  const deletedNoteIds = new Set(permanentDeletes.filter((item) => item.entityType === "note").map((item) => item.entityId));
+  const stores = [METADATA_STORE, SYNC_BASE_STORE, SYNC_JOURNAL_STORE, ACCOUNT_META_STORE, ATTACHMENT_BLOB_STORE, ...PENDING_LOCAL_CHANGE_STORES];
 
   return new Promise<PreservingMetadataRestoreResult>((resolve, reject) => {
     void openRestoreDatabase().then((database) => {
@@ -604,9 +607,20 @@ export function applyMetadataRestorePreservingLocalChangesAtomically(
         const createdIds = new Set(createdRequest.result.map((note) => note.id));
         const incomingNotes = new Map(restoredNoteRows(bundle).map((note) => [note.id, note]));
         for (const draft of draftRequest.result) {
+          if (deletedNoteIds.has(draft.noteId)) continue;
           const updatedAt = incomingNotes.get(draft.noteId)?.updatedAt;
           if (!createdIds.has(draft.noteId) && typeof updatedAt === "number") {
             transaction.objectStore(NOTE_DRAFT_STORE).put({ ...draft, baseCloudVersion: bundle.cloudVersion, baseUpdatedAt: updatedAt, baseRevisionId: nextBase.revision.revisionId }, accountStorageKey(draft.noteId, accountId));
+          }
+        }
+        for (const deletion of permanentDeletes) {
+          for (const store of deletion.stores) {
+            transaction.objectStore(store).delete(accountStorageKey(deletion.entityId, accountId));
+          }
+          for (const operation of journalRequest.result) {
+            if (operation.entityType === deletion.entityType && operation.entityId === deletion.entityId) {
+              transaction.objectStore(SYNC_JOURNAL_STORE).delete(accountStorageKey(operation.id, accountId));
+            }
           }
         }
         const localGeneration = (generationRequest.result ?? 0) + 1;

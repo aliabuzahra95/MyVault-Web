@@ -3,7 +3,7 @@ import { assertGoogleDriveSession } from "@/lib/googleDrive/accountSession";
 import type { GoogleDriveToken } from "@/lib/googleDrive/identity";
 import { buildDriveManifestPreview, parseDriveSyncManifest, type DriveManifestPreview } from "@/lib/restore/driveManifestPreview";
 import type { MetadataRestoreBundle } from "@/lib/restore/metadataRestore";
-import { createLocalRecoverySnapshot, loadLocalSyncBase, loadLastAppliedDriveManifest, loadMetadataRestoreBundle, loadLocalVaultGeneration, saveLastAppliedDriveManifest, stageIncomingDriveBundle } from "@/lib/restore/localRestoreStore";
+import { applyMetadataRestorePreservingLocalChangesAtomically, createLocalRecoverySnapshot, loadLocalSyncBase, loadLastAppliedDriveManifest, loadMetadataRestoreBundle, loadLocalVaultGeneration, saveLastAppliedDriveManifest, stageIncomingDriveBundle } from "@/lib/restore/localRestoreStore";
 import { stageVerifiedMetadataRestore, verifyDriveManifestFiles } from "@/lib/restore/verifiedDriveRestore";
 import { withAccountSyncLock } from "@/lib/sync/accountContext";
 import { computeBundleRevision, computeManifestRevision } from "@/lib/sync/revision";
@@ -38,8 +38,9 @@ export async function readDriveManifestPreview(accessToken: string) {
 type RefreshResult = { scan: MyVaultDriveScan; manifestPreview: DriveManifestPreview | null; metadataRestore: MetadataRestoreBundle | null; staged: boolean };
 const active = new Map<string, { token: string; promise: Promise<RefreshResult> }>();
 
-export function refreshLatestDriveMetadataSafely(token: GoogleDriveToken, accountId: string): Promise<RefreshResult> {
-  const existing = active.get(accountId);
+export function refreshLatestDriveMetadataSafely(token: GoogleDriveToken, accountId: string, manualRestore = false): Promise<RefreshResult> {
+  const workKey = `${accountId}:${manualRestore ? "manual" : "automatic"}`;
+  const existing = active.get(workKey);
   if (existing?.token === token.accessToken) return existing.promise;
   const promise = withAccountSyncLock(accountId, async () => {
     assertGoogleDriveSession(token, accountId);
@@ -53,6 +54,10 @@ export function refreshLatestDriveMetadataSafely(token: GoogleDriveToken, accoun
     if (!preview.manifestPreview) {
       update(accountId, { phase: "idle" });
       return { ...preview, metadataRestore: local, staged: false };
+    }
+    if ("incrementalBackup" in preview.manifestPreview.manifest && !manualRestore) {
+      update(accountId, { phase: "staged", error: "An incremental backup is available. Use Restore to apply it; it will not be applied automatically." });
+      return { ...preview, metadataRestore: local, staged: true };
     }
     const pinned = await computeManifestRevision(preview.manifestPreview.manifest);
     const [applied, base] = await Promise.all([loadLastAppliedDriveManifest(), loadLocalSyncBase()]);
@@ -79,7 +84,11 @@ export function refreshLatestDriveMetadataSafely(token: GoogleDriveToken, accoun
         update(accountId, { phase: "applying" });
         await createLocalRecoverySnapshot("before-background-drive-apply");
         assertGoogleDriveSession(token, accountId);
-        await applyIncomingDriveBundleSafely(incoming, nextBase);
+        if (incoming.incrementalBackupState) {
+          await applyMetadataRestorePreservingLocalChangesAtomically(incoming, nextBase, startingGeneration);
+        } else {
+          await applyIncomingDriveBundleSafely(incoming, nextBase);
+        }
         assertGoogleDriveSession(token, accountId);
         await saveLastAppliedDriveManifest(accountId, { manifestId: preview.scan.manifestFile!.id, revisionId: pinned.revisionId, bundleRevisionId: nextBase.revision.revisionId });
       });
@@ -94,7 +103,7 @@ export function refreshLatestDriveMetadataSafely(token: GoogleDriveToken, accoun
     update(accountId, { phase: "error", error: error instanceof Error ? error.message : "Drive is unavailable. Local data was preserved." });
     throw error;
   });
-  active.set(accountId, { token: token.accessToken, promise });
-  void promise.finally(() => { if (active.get(accountId)?.promise === promise) active.delete(accountId); }).catch(() => undefined);
+  active.set(workKey, { token: token.accessToken, promise });
+  void promise.finally(() => { if (active.get(workKey)?.promise === promise) active.delete(workKey); }).catch(() => undefined);
   return promise;
 }

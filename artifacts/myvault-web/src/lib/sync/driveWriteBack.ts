@@ -240,6 +240,9 @@ export async function writeWebsiteChangesToDrive({ accessToken, onProgress }: {
     if (!isInitialBackup) {
       const latest = await loadLatestManifest(accessToken);
       scan = latest.scan;
+      if ("incrementalBackup" in latest.manifest) {
+        throw new Error("Incremental backup publication is disabled pending the coordinated Android/Web release. This backup was not changed.");
+      }
       currentManifestRevisionId = latest.manifestRevisionId;
       const repaired = await repairManifestEntries(accessToken, latest.manifest.entries, await listDriveChildren(accessToken, latest.scan.folders.metadata!.id), await listDriveChildren(accessToken, latest.scan.folders.files!.id));
       repairedManifestEntries = repaired.repaired;

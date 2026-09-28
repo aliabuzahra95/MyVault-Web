@@ -1,5 +1,6 @@
 import { metadataFiles, restoreDataGroups } from "@/lib/restore/driveRestoreMap";
 import type { DriveSyncManifest, DriveSyncManifestEntry } from "@/lib/restore/driveManifestPreview";
+import type { BackupRecordChange } from "./incrementalBackup";
 
 export type RestoredMetadataFile = {
   fileName: string;
@@ -37,6 +38,7 @@ export type MetadataRestoreBundle = {
     itemCount: number;
   }>;
   issues: string[];
+  incrementalBackupState?: { headId: string; permanentDeletions: BackupRecordChange[] };
 };
 
 type DownloadedMetadataFile = {

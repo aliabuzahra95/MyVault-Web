@@ -2,6 +2,7 @@ import { downloadDriveFileBlob, listDriveChildren, type MyVaultDriveScan } from 
 import { buildMetadataRestoreBundle, getMetadataManifestEntries, type MetadataRestoreBundle } from "@/lib/restore/metadataRestore";
 import type { DriveSyncManifest, DriveSyncManifestEntry } from "@/lib/restore/driveManifestPreview";
 import { validateSyncCandidate } from "@/lib/sync/validateSyncCandidate";
+import { incrementalBackup, reconstructIncrementalBackup } from "./incrementalBackup";
 
 export type RestoreBlobDownloader = (accessToken: string, entry: DriveSyncManifestEntry) => Promise<Blob>;
 export type DriveChildrenLister = typeof listDriveChildren;
@@ -96,11 +97,13 @@ export async function stageVerifiedMetadataRestore({
   manifest,
   download = (token, entry) => downloadDriveFileBlob(token, entry.cloudFileId, "application/json"),
   compatibilityIssues = [],
+  downloadDelta = (token, fileId) => downloadDriveFileBlob(token, fileId, "application/json"),
 }: {
   accessToken: string;
   manifest: DriveSyncManifest;
   download?: RestoreBlobDownloader;
   compatibilityIssues?: string[];
+  downloadDelta?: (token: string, fileId: string) => Promise<Blob>;
 }) {
   const issues = [...compatibilityIssues, ...validateManifestStructure(manifest)];
   const outcomes = await Promise.all(getMetadataManifestEntries(manifest).map(async (entry) => {
@@ -130,7 +133,22 @@ export async function stageVerifiedMetadataRestore({
   issues.push(...outcomes.flatMap((outcome) => outcome.issues));
   if (issues.length) throw new RestoreCompatibilityError(uniqueIssues(issues));
   const downloadedFiles = outcomes.flatMap((outcome) => outcome.file ? [outcome.file] : []);
-  const bundle = buildMetadataRestoreBundle(manifest, downloadedFiles);
+  const reconstructed = await reconstructIncrementalBackup(
+    Object.fromEntries(downloadedFiles.map((file) => [file.entry.fileName, file.json])),
+    incrementalBackup(manifest),
+    async (descriptor) => new Uint8Array(await (await downloadDelta(accessToken, descriptor.cloudFileId)).arrayBuffer()),
+  );
+  const entriesByName = new Map(downloadedFiles.map((file) => [file.entry.fileName, file.entry]));
+  const bundle = buildMetadataRestoreBundle(manifest, Object.entries(reconstructed.files).map(([fileName, json]) => ({
+    json,
+    entry: entriesByName.get(fileName) ?? {
+      path: `metadata/${fileName}`, fileName, backupEntry: fileName, kind: "metadata" as const,
+      cloudFileId: `logical-delta:${reconstructed.headId}:${fileName}`, size: 0, sha256: "", updatedAt: manifest.cloudVersion,
+    },
+  })));
+  if (reconstructed.headId) {
+    bundle.incrementalBackupState = { headId: reconstructed.headId, permanentDeletions: reconstructed.permanentDeletions };
+  }
   const candidate = validateSyncCandidate(bundle);
   issues.push(...bundle.issues, ...candidate.issues, ...validateAttachmentReferences(bundle));
   const allIssues = uniqueIssues(issues);
