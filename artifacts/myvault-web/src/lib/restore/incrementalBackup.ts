@@ -1,4 +1,5 @@
 import type { DriveSyncManifest } from "./driveManifestPreview";
+import { BACKUP_BINARY_READER_CAPABILITY, BackupBinaryResolution, parseBackupBinaries, type BackupBinaryDescriptor } from "./backupBinaryDescriptors";
 
 // Reader support ships first. Publication must stay off until the coordinated release is accepted.
 export const INCREMENTAL_BACKUP_PUBLICATION_ENABLED = false;
@@ -16,12 +17,13 @@ export type BackupRecordChange = {
   file: string; key: string[]; operation: "upsert" | "delete"; value?: Record<string, unknown>;
 };
 export type BackupDelta = {
-  format: "myvault-backup-delta"; version: 1; checkpointId: string; parentId: string; deltaId: string;
+  format: "myvault-backup-delta"; version: 1 | 2; checkpointId: string; parentId: string; deltaId: string;
   changes: BackupRecordChange[];
+  binaries?: BackupBinaryDescriptor[];
 };
 export type BackupDeltaDescriptor = { deltaId: string; parentId: string; cloudFileId: string; size: number; sha256: string };
 export type IncrementalBackup = {
-  version: 1; requiredReader: "checkpoint-delta-v1"; checkpointId: string; headId: string; deltas: BackupDeltaDescriptor[];
+  version: 1 | 2; requiredReader: "checkpoint-delta-v1" | typeof BACKUP_BINARY_READER_CAPABILITY; checkpointId: string; headId: string; deltas: BackupDeltaDescriptor[];
 };
 
 function requireValid(condition: unknown, message: string): asserts condition {
@@ -38,7 +40,8 @@ export function incrementalBackup(manifest: DriveSyncManifest): IncrementalBacku
   if (!("incrementalBackup" in manifest)) return null;
   const extension = manifest.incrementalBackup;
   object(extension);
-  requireValid(extension.version === 1 && extension.requiredReader === "checkpoint-delta-v1", "Unsupported incremental backup capability.");
+  requireValid((extension.version === 1 && extension.requiredReader === "checkpoint-delta-v1")
+    || (extension.version === 2 && extension.requiredReader === BACKUP_BINARY_READER_CAPABILITY), "Unsupported incremental backup capability.");
   id(extension.checkpointId); id(extension.headId);
   requireValid(Array.isArray(extension.deltas) && extension.deltas.length <= 4096, "Invalid backup delta chain length.");
   let parent: string = extension.checkpointId;
@@ -70,7 +73,7 @@ export function backupRecordKey(file: string, row: Record<string, unknown>): str
 
 export function parseBackupDelta(value: unknown): BackupDelta {
   object(value);
-  requireValid(value.format === "myvault-backup-delta" && value.version === 1, "Unsupported backup delta.");
+  requireValid(value.format === "myvault-backup-delta" && (value.version === 1 || value.version === 2), "Unsupported backup delta.");
   id(value.checkpointId); id(value.parentId); id(value.deltaId);
   requireValid(value.deltaId !== value.parentId && value.deltaId !== value.checkpointId, "Delta ID must be new.");
   requireValid(Array.isArray(value.changes) && value.changes.length > 0 && value.changes.length <= 100_000, "Invalid backup change count.");
@@ -92,11 +95,13 @@ export function parseBackupDelta(value: unknown): BackupDelta {
       requireValid(JSON.stringify(change.key) === JSON.stringify(backupRecordKey(change.file, change.value)), "Backup payload ID differs from its change ID.");
     }
   }
+  parseBackupBinaries(value.version, value.binaries, value.changes as BackupRecordChange[]);
   return value as BackupDelta;
 }
 
-export function createBackupDelta(checkpointId: string, parentId: string, deltaId: string, changes: BackupRecordChange[]): BackupDelta {
-  const delta = parseBackupDelta({ format: "myvault-backup-delta", version: 1, checkpointId, parentId, deltaId, changes: structuredClone(changes) });
+export function createBackupDelta(checkpointId: string, parentId: string, deltaId: string, changes: BackupRecordChange[], binaries?: BackupBinaryDescriptor[]): BackupDelta {
+  const delta = parseBackupDelta({ format: "myvault-backup-delta", version: binaries === undefined ? 1 : 2, checkpointId, parentId, deltaId,
+    changes: structuredClone(changes), ...(binaries === undefined ? {} : { binaries: structuredClone(binaries) }) });
   requireValid(new TextEncoder().encode(JSON.stringify(delta)).byteLength <= 16 * 1024 * 1024, "Backup delta is too large.");
   return delta;
 }
@@ -114,8 +119,9 @@ export async function appendBackupDelta(manifest: DriveSyncManifest, delta: Back
   requireValid(delta.checkpointId === checkpointId && delta.parentId === parentId, "Delta does not extend this backup.");
   requireValid(Number.isSafeInteger(cloudVersion) && cloudVersion > manifest.cloudVersion, "Backup version must advance.");
   const bytes = new TextEncoder().encode(JSON.stringify(delta));
+  const binaryCapability = previous?.version === 2 || delta.version === 2;
   const result: DriveSyncManifest = { ...structuredClone(manifest), cloudVersion, incrementalBackup: {
-    version: 1, requiredReader: "checkpoint-delta-v1", checkpointId, headId: delta.deltaId,
+    version: binaryCapability ? 2 : 1, requiredReader: binaryCapability ? BACKUP_BINARY_READER_CAPABILITY : "checkpoint-delta-v1", checkpointId, headId: delta.deltaId,
     deltas: [...(previous?.deltas ?? []), { deltaId: delta.deltaId, parentId, cloudFileId, size: bytes.byteLength, sha256: await backupBytesSha256(bytes) }],
   } satisfies IncrementalBackup };
   incrementalBackup(result);
@@ -132,17 +138,22 @@ export function backupDeltasAfter(extension: IncrementalBackup, appliedHead: str
 export async function reconstructIncrementalBackup(
   checkpoint: Record<string, unknown>, extension: IncrementalBackup | null,
   load: (descriptor: BackupDeltaDescriptor) => Promise<Uint8Array>,
-): Promise<{ files: Record<string, unknown>; permanentDeletions: BackupRecordChange[]; headId: string | null }> {
+  checkpointBinaries?: BackupBinaryDescriptor[],
+): Promise<{ files: Record<string, unknown>; permanentDeletions: BackupRecordChange[]; headId: string | null; binaries?: BackupBinaryDescriptor[] }> {
   if (!extension) return { files: structuredClone(checkpoint), permanentDeletions: [], headId: null };
   incrementalBackup({ incrementalBackup: extension } as unknown as DriveSyncManifest);
+  requireValid(extension.version !== 2 || checkpointBinaries !== undefined, "Binary-capable backup requires the checkpoint binary index.");
+  const binaryResolution = extension.version === 2 ? new BackupBinaryResolution(checkpointBinaries!) : undefined;
   const files = structuredClone(checkpoint);
   const deletions = new Map<string, BackupRecordChange>();
   for (const descriptor of extension.deltas) {
     const bytes = await load(descriptor);
     requireValid(bytes.byteLength === descriptor.size && await backupBytesSha256(bytes) === descriptor.sha256, "Backup delta byte verification failed. Nothing may be restored.");
     const delta = parseBackupDelta(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)));
+    requireValid(delta.version !== 2 || binaryResolution, "Binary delta requires the new reader capability.");
     requireValid(delta.checkpointId === extension.checkpointId && delta.deltaId === descriptor.deltaId
       && delta.parentId === descriptor.parentId, "Delta content does not match its committed ancestry.");
+    binaryResolution?.apply(delta.changes, parseBackupBinaries(delta.version, delta.binaries, delta.changes));
     const byFile = new Map<string, BackupRecordChange[]>();
     delta.changes.forEach((change) => byFile.set(change.file, [...(byFile.get(change.file) ?? []), change]));
     for (const [file, changes] of byFile) {
@@ -168,5 +179,5 @@ export async function reconstructIncrementalBackup(
       files[file] = [...indexed.values()];
     }
   }
-  return { files, permanentDeletions: [...deletions.values()], headId: extension.headId };
+  return { files, permanentDeletions: [...deletions.values()], headId: extension.headId, binaries: binaryResolution?.finish(files) };
 }

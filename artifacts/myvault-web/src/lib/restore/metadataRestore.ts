@@ -22,6 +22,7 @@ export type MetadataRestoreBundle = {
   metadataBytes: number;
   files: RestoredMetadataFile[];
   fileEntries?: DriveSyncManifestEntry[];
+  binaryDescriptorsVerified?: true;
   counts: {
     courses: number;
     folders: number;

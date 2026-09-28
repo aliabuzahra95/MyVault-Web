@@ -23,7 +23,7 @@ import {
   runWithVerifiedGoogleDriveSession,
   verifyAndActivateGoogleDriveSession,
 } from "@/lib/googleDrive/accountSession";
-import { cacheAttachmentManifestEntries, getAttachmentFileClaim } from "@/lib/restore/attachmentFileRestore";
+import { cacheAttachmentManifestEntries, getAttachmentFileClaim, verifyAttachmentFileClaim } from "@/lib/restore/attachmentFileRestore";
 import { parseDriveSyncManifest } from "@/lib/restore/driveManifestPreview";
 import { recordRecentActivity } from "@/lib/recentActivity";
 import { useRestoredCorpus } from "@/hooks/useRestoredCorpus";
@@ -299,6 +299,7 @@ export default function LibraryDocumentPage() {
       const blob = await downloadDriveFileBlob(token.accessToken, manifestEntry.cloudFileId, attachment.mimeType);
       markPdfOpen(id, 'networkComplete');
       assertGoogleDriveSession(token, accountId);
+      await verifyAttachmentFileClaim(claim, blob);
       void saveLocalAttachmentBlob(attachment.id, blob).catch(() => undefined);
       const nextUrl = URL.createObjectURL(blob);
       if (activeAttachmentId.current !== requestedAttachmentId) {

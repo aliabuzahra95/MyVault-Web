@@ -7,6 +7,7 @@ import {
 } from "@/lib/restore/vaultRichText";
 import type { RestoredPdfAnnotation } from "@/lib/restore/restoredCorpus";
 import { permanentBackupOverlayDeletes } from "./permanentBackupDeletions";
+import { verifyBackupBinaryBlob } from "./backupBinaryDescriptors";
 import {
   accountStorageKey,
   accountStorageRange,
@@ -1057,8 +1058,19 @@ export function saveLocalAttachmentBlob(attachmentId: string, blob: Blob) {
   return putForAccount(ATTACHMENT_BLOB_STORE, attachmentId, blob);
 }
 
-export function loadLocalAttachmentBlob(attachmentId: string) {
-  return getForAccount<Blob>(ATTACHMENT_BLOB_STORE, attachmentId);
+export async function loadLocalAttachmentBlob(attachmentId: string) {
+  const blob = await getForAccount<Blob>(ATTACHMENT_BLOB_STORE, attachmentId);
+  if (!blob) return blob;
+  const bundle = await loadMetadataRestoreBundle();
+  if (!bundle?.binaryDescriptorsVerified) return blob;
+  const descriptor = bundle.fileEntries?.find((entry) => entry.backupEntry === `files/${attachmentId}`);
+  if (!descriptor) return null;
+  try {
+    await verifyBackupBinaryBlob(blob, descriptor);
+    return blob;
+  } catch {
+    return null;
+  }
 }
 
 export function deleteLocalAttachmentBlob(attachmentId: string) {
