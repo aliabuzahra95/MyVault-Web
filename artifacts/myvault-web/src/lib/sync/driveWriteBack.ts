@@ -43,6 +43,7 @@ import { reconcileMetadataBundles } from "@/lib/sync/threeWayMerge";
 import { validateSyncCandidate } from "@/lib/sync/validateSyncCandidate";
 import { applyIncomingDriveBundleSafely } from "@/lib/sync/safePull";
 import { withLocalVaultUpdate } from "@/lib/sync/editorLease";
+import { assertNoActiveGraphNamespace } from "@/lib/googleDrive/graphTransport";
 
 export type DriveWriteBackProgress = {
   phase: "checking" | "preparing" | "uploading" | "committing" | "complete";
@@ -221,6 +222,9 @@ export async function writeWebsiteChangesToDrive({ accessToken, onProgress }: {
   const { accountId } = await verifyAndActivateGoogleDriveSession(token);
   return withAccountSyncLock(accountId, async () => {
     onProgress?.({ phase: "checking", completedFiles: 0, totalFiles: 0, currentFileName: null });
+    assertGoogleDriveSession(token, accountId);
+
+    await assertNoActiveGraphNamespace(accessToken);
     assertGoogleDriveSession(token, accountId);
 
     const restoredBundle = await loadMetadataRestoreBundle();

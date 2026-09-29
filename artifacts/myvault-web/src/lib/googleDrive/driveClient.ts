@@ -131,6 +131,10 @@ async function listDriveFiles(accessToken: string, query: string, pageSize = 10)
   return files;
 }
 
+export function listNamedDriveFolders(accessToken: string, name: string, parentId = "root") {
+  return listDriveFiles(accessToken, `name = '${escapeDriveQueryValue(name)}' and mimeType = '${DRIVE_FOLDER_MIME_TYPE}' and '${escapeDriveQueryValue(parentId)}' in parents and trashed = false`, 1000);
+}
+
 async function findFolder(accessToken: string, name: string, parentId: string) {
   const safeName = escapeDriveQueryValue(name);
   const safeParentId = escapeDriveQueryValue(parentId);

@@ -190,14 +190,14 @@ export class BackupGraph {
   }
 }
 
-/** Pure reconstruction adapter; never applies to local storage or falls back to stale checkpoint bytes. */
-export async function reconstructBackupGraph(graph: BackupGraph, load: (id: string) => Promise<Uint8Array>) {
-  const plan = graph.plan(); valid(plan.status === "SINGLE_TIP", `Graph restore blocked: ${plan.status}`);
-  const cp = plan.checkpoint!; const raw = await load(cp.cloudFileId); await verifyGraphObject(cp, raw);
+/** Graph checkpoints need no mutable legacy layout/head fields. Return verified metadata only. */
+export async function readBackupGraphCheckpoint(cp: GraphCheckpoint, load: (id: string) => Promise<Uint8Array>) {
+  const raw = await load(cp.cloudFileId); await verifyGraphObject(cp, raw);
   const manifest: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(raw)); object(manifest);
   valid(manifest.schemaVersion === 1 && manifest.storage === "google-drive-api" && !("incrementalBackup" in manifest), "Graph checkpoint must be a full historical manifest.");
   valid(Array.isArray(manifest.entries) && manifest.entries.length > 0 && manifest.entries.length <= 100_000, "Invalid checkpoint entries.");
   const files: Record<string, unknown> = {}; const binaries: BackupBinaryDescriptor[] = [];
+  const objects: GraphObject[] = [{ objectRef: cp, bytes: raw }];
   const identities = new Map<string, string>();
   const remember = (r: GraphObjectRef) => {
     const identity = JSON.stringify([r.sha256, r.size]);
@@ -211,6 +211,7 @@ export async function reconstructBackupGraph(graph: BackupGraph, load: (id: stri
       const name = entry.fileName;
       valid(typeof name === "string" && (Object.hasOwn(backupRecordKeys, name) || name === "settings.json" || name === "manifest.json"), "Unknown checkpoint metadata group.");
       const bytes = await load(entry.cloudFileId); await verifyGraphObject(entry, bytes);
+      objects.push({ objectRef: { cloudFileId: entry.cloudFileId, sha256: entry.sha256, size: entry.size }, bytes });
       valid(!Object.hasOwn(files, name), "Duplicate checkpoint metadata.");
       files[name] = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
     } else {
@@ -218,6 +219,23 @@ export async function reconstructBackupGraph(graph: BackupGraph, load: (id: stri
       binaries.push({ attachmentId: entry.backupEntry.slice(6), cloudFileId: entry.cloudFileId, sha256: entry.sha256, size: entry.size });
     }
   }
+  valid(Number.isSafeInteger(manifest.cloudVersion) && Number(manifest.cloudVersion) > 0, "Invalid graph checkpoint version.");
+  return { files, binaries, objects, cloudVersion: Number(manifest.cloudVersion) };
+}
+
+/** Pure reconstruction adapter; never applies to local storage or falls back to stale checkpoint bytes. */
+export async function reconstructBackupGraph(graph: BackupGraph, load: (id: string) => Promise<Uint8Array>) {
+  const plan = graph.plan(); valid(plan.status === "SINGLE_TIP", `Graph restore blocked: ${plan.status}`);
+  const cp = plan.checkpoint!;
+  const checkpoint = await readBackupGraphCheckpoint(cp, load);
+  const { files, binaries } = checkpoint;
+  const identities = new Map<string, string>();
+  const remember = (r: GraphObjectRef) => {
+    const identity = JSON.stringify([r.sha256, r.size]);
+    valid(!identities.has(r.cloudFileId) || identities.get(r.cloudFileId) === identity, "Immutable object identity conflict.");
+    identities.set(r.cloudFileId, identity);
+  };
+  checkpoint.objects.forEach((o) => remember(o.objectRef)); binaries.forEach(remember);
   const deltaCommits = new Map(plan.commits.filter((c) => c.delta).map((c) => [c.delta!.cloudFileId, c]));
   const descriptors: BackupDeltaDescriptor[] = [];
   for (const d of plan.deltas) {

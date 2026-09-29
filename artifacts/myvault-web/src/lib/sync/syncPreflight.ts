@@ -198,7 +198,7 @@ function touchedFile(fileName: string, original: JsonRow[], merged: JsonRow[], p
   };
 }
 
-const ANDROID_BODY_BLOCK_TYPES = new Set([
+export const ANDROID_BODY_BLOCK_TYPES: ReadonlySet<string> = new Set([
   "rich_text",
   "rich_html",
   "rich_body",
@@ -469,9 +469,16 @@ export function buildSyncPreflight(
   });
 
   const originalNotes = rowsFor(bundle, "notes.json");
-  const createdNoteRows = pending.createdNotes.map(noteRow);
+  const originalNoteById = new Map(originalNotes.map((row) => [stringValue(row, "id"), row]));
+  const createdNoteRows = pending.createdNotes.map((note) => {
+    const patch = noteRow(note);
+    const original = originalNoteById.get(note.id);
+    // Existing-note overlays represent metadata actions, not full body edits.
+    // bodyPreview is truncated and cannot replace the canonical rich-text body.
+    return original ? { ...patch, bodyPlainText: original.bodyPlainText, isFavourite: original.isFavourite } : patch;
+  });
   let mergedNotes = mergeRows(originalNotes, createdNoteRows);
-  const activeCreatedNotes = pending.createdNotes.filter((note) => !localDeletedAt(note));
+  const activeCreatedNotes = pending.createdNotes.filter((note) => !localDeletedAt(note) && !originalNoteById.has(note.id));
   const createdNoteIds = new Set(activeCreatedNotes.map((note) => note.id));
   const noteIdsBeforeDrafts = new Set(mergedNotes.filter((row) => !rowIsDeleted(row)).map((row) => stringValue(row, "id")));
   const validDrafts: LocalNoteDraft[] = [];

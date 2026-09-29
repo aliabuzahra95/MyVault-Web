@@ -15,7 +15,18 @@ import {
 } from "@/lib/sync/accountContext";
 
 const DATABASE_NAME = "myvault-web-restore";
-const DATABASE_VERSION = 9;
+const DATABASE_VERSION = 10;
+export const BACKUP_GRAPH_STORES = ["backup-graph-states", "backup-graph-operations", "backup-graph-staged-objects", "backup-graph-binary-fingerprints"] as const;
+function invalidateGraphProof(transaction: IDBTransaction, accountId: string) {
+  const store = transaction.objectStore(BACKUP_GRAPH_STORES[0]);
+  const request = store.openCursor(IDBKeyRange.bound([accountId], [accountId, []]));
+  request.onsuccess = () => {
+    const cursor = request.result;
+    if (!cursor) return;
+    cursor.update({ ...cursor.value, trust: "INVALIDATED", originEpoch: cursor.value.originEpoch + 1 });
+    cursor.continue();
+  };
+}
 const METADATA_STORE = "metadata-bundles";
 const NOTE_DRAFT_STORE = "note-drafts";
 const CREATED_FOLDER_STORE = "created-folders";
@@ -249,6 +260,9 @@ function openRestoreDatabase() {
 
     request.onupgradeneeded = () => {
       const database = request.result;
+      for (const name of BACKUP_GRAPH_STORES) {
+        if (!database.objectStoreNames.contains(name)) database.createObjectStore(name);
+      }
       if (!database.objectStoreNames.contains(METADATA_STORE)) {
         database.createObjectStore(METADATA_STORE);
       }
@@ -315,6 +329,39 @@ function openRestoreDatabase() {
   });
 }
 
+// Graph state and the canonical Vault share a database so completion can be one
+// atomic transaction. Network, hashing and Blob reads must happen before this API.
+export async function backupGraphStorageTransaction<T>(
+  mode: IDBTransactionMode,
+  callback: (transaction: IDBTransaction, finish: (result: T) => void) => void,
+): Promise<T> {
+  const database = await openRestoreDatabase();
+  return new Promise<T>((resolve, reject) => {
+    const transaction = database.transaction([
+      ...BACKUP_GRAPH_STORES, METADATA_STORE, SYNC_BASE_STORE, ACCOUNT_META_STORE,
+      SYNC_JOURNAL_STORE, ATTACHMENT_BLOB_STORE, ...PENDING_LOCAL_CHANGE_STORES,
+    ], mode);
+    let result: T;
+    let finished = false;
+    transaction.oncomplete = () => {
+      database.close();
+      if (finished) resolve(result);
+      else reject(new Error("Graph transaction did not complete its proof checks."));
+    };
+    transaction.onerror = transaction.onabort = () => {
+      database.close();
+      reject(transaction.error ?? new Error("Graph storage change was rolled back; local data was preserved."));
+    };
+    try {
+      callback(transaction, (value) => { result = value; finished = true; });
+    } catch (error) {
+      transaction.abort();
+      database.close();
+      reject(error);
+    }
+  });
+}
+
 function putForAccount<T>(storeName: string, id: string, value: T, accountId = getActiveAccountId()) {
   return runStoreTransaction(storeName, "readwrite", (store) => store.put(value, accountStorageKey(id, accountId)), accountId).then(() => undefined);
 }
@@ -376,7 +423,7 @@ export async function settlePublishedDriveBundle(bundle: MetadataRestoreBundle, 
   const accountId = base.accountId;
   const database = await openRestoreDatabase();
   return new Promise<boolean>((resolve, reject) => {
-    const stores = [METADATA_STORE, SYNC_BASE_STORE, ACCOUNT_META_STORE, SYNC_JOURNAL_STORE, ATTACHMENT_BLOB_STORE, ...PENDING_LOCAL_CHANGE_STORES];
+    const stores = [BACKUP_GRAPH_STORES[0], METADATA_STORE, SYNC_BASE_STORE, ACCOUNT_META_STORE, SYNC_JOURNAL_STORE, ATTACHMENT_BLOB_STORE, ...PENDING_LOCAL_CHANGE_STORES];
     const transaction = database.transaction(stores, "readwrite");
     const meta = transaction.objectStore(ACCOUNT_META_STORE);
     const key = accountStorageKey("vault-generation", accountId);
@@ -384,6 +431,7 @@ export async function settlePublishedDriveBundle(bundle: MetadataRestoreBundle, 
     let applied = false;
     generation.onsuccess = () => {
       if (getActiveAccountId() !== accountId || (generation.result ?? 0) !== expectedGeneration) return;
+      invalidateGraphProof(transaction, accountId);
       transaction.objectStore(METADATA_STORE).put(bundle, accountStorageKey(CURRENT_METADATA_KEY, accountId));
       transaction.objectStore(SYNC_BASE_STORE).put(base, accountStorageKey("base", accountId));
       for (const name of [SYNC_JOURNAL_STORE, ATTACHMENT_BLOB_STORE, ...PENDING_LOCAL_CHANGE_STORES]) {
@@ -535,7 +583,8 @@ export function applyMetadataRestoreAtomically(bundle: MetadataRestoreBundle, ba
   const accountId = getActiveAccountId();
   return new Promise<void>((resolve, reject) => {
     void openRestoreDatabase().then((database) => {
-      const transaction = database.transaction([METADATA_STORE, SYNC_BASE_STORE], "readwrite");
+      const transaction = database.transaction([BACKUP_GRAPH_STORES[0], METADATA_STORE, SYNC_BASE_STORE], "readwrite");
+      invalidateGraphProof(transaction, accountId);
       transaction.objectStore(METADATA_STORE).put(bundle, accountStorageKey(CURRENT_METADATA_KEY, accountId));
       transaction.objectStore(SYNC_BASE_STORE).put(base, accountStorageKey("base", accountId));
       transaction.oncomplete = () => {
@@ -572,7 +621,7 @@ export function applyMetadataRestorePreservingLocalChangesAtomically(
   if (accountId !== nextBase.accountId) return Promise.reject(new Error("The Google account changed. The previous local vault was preserved."));
   const permanentDeletes = permanentBackupOverlayDeletes(bundle.incrementalBackupState?.permanentDeletions ?? []);
   const deletedNoteIds = new Set(permanentDeletes.filter((item) => item.entityType === "note").map((item) => item.entityId));
-  const stores = [METADATA_STORE, SYNC_BASE_STORE, SYNC_JOURNAL_STORE, ACCOUNT_META_STORE, ATTACHMENT_BLOB_STORE, ...PENDING_LOCAL_CHANGE_STORES];
+  const stores = [BACKUP_GRAPH_STORES[0], METADATA_STORE, SYNC_BASE_STORE, SYNC_JOURNAL_STORE, ACCOUNT_META_STORE, ATTACHMENT_BLOB_STORE, ...PENDING_LOCAL_CHANGE_STORES];
 
   return new Promise<PreservingMetadataRestoreResult>((resolve, reject) => {
     void openRestoreDatabase().then((database) => {
@@ -599,6 +648,7 @@ export function applyMetadataRestorePreservingLocalChangesAtomically(
         }
 
         const hasPendingJournalOperation = journalRequest.result.some((operation) => operation.status === "pending");
+        invalidateGraphProof(transaction, accountId);
         const hasPendingOverlay = overlayRequests.some((request) => request.result > 0);
         const preservedLocalChanges = hasPendingJournalOperation || hasPendingOverlay;
         const preservedExistingBase = false;
@@ -688,7 +738,9 @@ function runStoreTransaction<T>(storeName: string, mode: IDBTransactionMode, cal
     void openRestoreDatabase()
       .then((database) => {
         const tracksGeneration = mode === "readwrite" && [METADATA_STORE, SYNC_BASE_STORE, SYNC_JOURNAL_STORE, ATTACHMENT_BLOB_STORE, ...PENDING_LOCAL_CHANGE_STORES].includes(storeName);
-        const transaction = database.transaction(tracksGeneration ? [...new Set([storeName, ACCOUNT_META_STORE, SYNC_JOURNAL_STORE])] : storeName, mode);
+        const changesLegacyBase = mode === "readwrite" && [METADATA_STORE, SYNC_BASE_STORE].includes(storeName);
+        const transaction = database.transaction(tracksGeneration ? [...new Set([storeName, ACCOUNT_META_STORE, SYNC_JOURNAL_STORE, ...(changesLegacyBase ? [BACKUP_GRAPH_STORES[0]] : [])])] : storeName, mode);
+        if (changesLegacyBase) invalidateGraphProof(transaction, accountId);
         if (tracksGeneration) {
           const meta = transaction.objectStore(ACCOUNT_META_STORE);
           const key = accountStorageKey("vault-generation", accountId);
@@ -1054,13 +1106,53 @@ export async function deleteLocalCreatedAttachment(attachmentId: string, source?
   await putWithOperation(CREATED_ATTACHMENT_STORE, attachmentId, { ...existing, updatedAt: Date.now(), deletedAt: Date.now() }, "attachment", "delete", accountId);
 }
 
-export function saveLocalAttachmentBlob(attachmentId: string, blob: Blob) {
-  return putForAccount(ATTACHMENT_BLOB_STORE, attachmentId, blob);
+export async function saveLocalAttachmentBlob(attachmentId: string, blob: Blob, origin: "mutation" | "verified-cache" = "mutation") {
+  const accountId = getActiveAccountId();
+  const sha256 = [...new Uint8Array(await crypto.subtle.digest("SHA-256", await blob.arrayBuffer()))]
+    .map((b) => b.toString(16).padStart(2, "0")).join("");
+  await backupGraphStorageTransaction("readwrite", (tx, finish) => {
+    const bundle = tx.objectStore(METADATA_STORE).get(accountStorageKey(CURRENT_METADATA_KEY, accountId));
+    const overlay = tx.objectStore(CREATED_ATTACHMENT_STORE).get(accountStorageKey(attachmentId, accountId));
+    const generation = tx.objectStore(ACCOUNT_META_STORE).get(accountStorageKey("vault-generation", accountId));
+    let reads = 3;
+    const save = () => {
+      if (--reads) return;
+      try {
+        const localBundle: MetadataRestoreBundle | undefined = bundle.result;
+        if (origin === "verified-cache") {
+          const descriptor = localBundle?.fileEntries?.find((e) => e.backupEntry === `files/${attachmentId}`);
+          if (descriptor?.sha256 && (descriptor.sha256 !== sha256 || descriptor.size !== blob.size)) throw new Error("Cached file does not match the verified backup.");
+          // A late download must not replace new bytes imported in another tab.
+          if (overlay.result) { finish(undefined); return; }
+        } else {
+          const rows = localBundle?.files.find((f) => f.fileName === "attachments.json")?.json;
+          const original = Array.isArray(rows) ? rows.find((r) => r.id === attachmentId) : null;
+          const attachment: Attachment | null = overlay.result ?? (original ? { id: attachmentId, name: original.fileName,
+            noteId: original.noteId ?? null, libraryFolderId: original.libraryFolderId ?? null, mimeType: original.mimeType,
+            sizeBytes: blob.size, createdAt: original.createdAt, isPinned: Boolean(original.isPinned) } : null);
+          if (attachment) tx.objectStore(CREATED_ATTACHMENT_STORE).put({ ...attachment, sizeBytes: blob.size }, accountStorageKey(attachmentId, accountId));
+          const operation: LocalSyncOperation = { schemaVersion: 1, id: newOperationId(), accountId, entityType: "attachment-binary",
+            entityId: attachmentId, operation: "upsert", createdAt: new Date().toISOString(), status: "pending" };
+          tx.objectStore(SYNC_JOURNAL_STORE).put(operation, accountStorageKey(operation.id, accountId));
+          tx.objectStore(ACCOUNT_META_STORE).put((generation.result ?? 0) + 1, accountStorageKey("vault-generation", accountId));
+        }
+        tx.objectStore(ATTACHMENT_BLOB_STORE).put(blob, accountStorageKey(attachmentId, accountId));
+        tx.objectStore("backup-graph-binary-fingerprints").put({ sha256, size: blob.size }, [accountId, attachmentId]);
+        finish(undefined);
+      } catch { tx.abort(); }
+    };
+    bundle.onsuccess = overlay.onsuccess = generation.onsuccess = save;
+  });
+  if (origin === "mutation") notifyLocalContentChange();
 }
 
 export async function loadLocalAttachmentBlob(attachmentId: string) {
   const blob = await getForAccount<Blob>(ATTACHMENT_BLOB_STORE, attachmentId);
   if (!blob) return blob;
+  const pending = await getForAccount<Attachment>(CREATED_ATTACHMENT_STORE, attachmentId);
+  if (pending && !isLocallyDeleted(pending)) {
+    return pending.sizeBytes === blob.size ? blob : null;
+  }
   const bundle = await loadMetadataRestoreBundle();
   if (!bundle?.binaryDescriptorsVerified) return blob;
   const descriptor = bundle.fileEntries?.find((entry) => entry.backupEntry === `files/${attachmentId}`);

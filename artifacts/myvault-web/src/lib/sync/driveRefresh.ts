@@ -9,6 +9,7 @@ import { withAccountSyncLock } from "@/lib/sync/accountContext";
 import { computeBundleRevision, computeManifestRevision } from "@/lib/sync/revision";
 import { applyIncomingDriveBundleSafely } from "@/lib/sync/safePull";
 import { ActiveEditorError, withLocalVaultUpdate } from "@/lib/sync/editorLease";
+import { assertNoActiveGraphNamespace } from "@/lib/googleDrive/graphTransport";
 
 export type DriveRefreshStatus = {
   phase: "idle" | "checking" | "downloading" | "validating" | "applying" | "current" | "staged" | "error";
@@ -45,6 +46,8 @@ export function refreshLatestDriveMetadataSafely(token: GoogleDriveToken, accoun
   const promise = withAccountSyncLock(accountId, async () => {
     assertGoogleDriveSession(token, accountId);
     update(accountId, { phase: "checking", error: null });
+    await assertNoActiveGraphNamespace(token.accessToken);
+    assertGoogleDriveSession(token, accountId);
     const startingGeneration = await loadLocalVaultGeneration();
     const preview = await readDriveManifestPreview(token.accessToken);
     assertGoogleDriveSession(token, accountId);

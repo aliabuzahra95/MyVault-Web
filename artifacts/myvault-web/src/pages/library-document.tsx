@@ -300,7 +300,7 @@ export default function LibraryDocumentPage() {
       markPdfOpen(id, 'networkComplete');
       assertGoogleDriveSession(token, accountId);
       await verifyAttachmentFileClaim(claim, blob);
-      void saveLocalAttachmentBlob(attachment.id, blob).catch(() => undefined);
+      void saveLocalAttachmentBlob(attachment.id, blob, "verified-cache").catch(() => undefined);
       const nextUrl = URL.createObjectURL(blob);
       if (activeAttachmentId.current !== requestedAttachmentId) {
         URL.revokeObjectURL(nextUrl);
