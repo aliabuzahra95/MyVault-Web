@@ -13,7 +13,7 @@ const quote = (value: string) => value.replace(/\\/g, "\\\\").replace(/'/g, "\\'
 /** Read-only safety barrier: visible graph data must never be overwritten by the legacy writer. */
 export async function assertNoActiveGraphNamespace(accessToken: string) {
   const roots = await listNamedDriveFolders(accessToken, BACKUP_GRAPH_NAMESPACE);
-  if (roots.length) throw new Error("A new-format MyVault backup exists. This Web version must finish graph compatibility before saving or restoring legacy backups. Local data and Drive were not changed.");
+  if (roots.length) throw new Error("A graph backup exists. Web Backup is disabled for this graph; use Android to back up. Local data and Drive were not changed.");
 }
 
 /** No folder creation, no mutable update and no deletion. Layout must be explicitly enrolled. */

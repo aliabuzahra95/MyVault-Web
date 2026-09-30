@@ -10,7 +10,6 @@ import { computeBundleRevision, computeManifestRevision } from "@/lib/sync/revis
 import { applyIncomingDriveBundleSafely } from "@/lib/sync/safePull";
 import { ActiveEditorError, withLocalVaultUpdate } from "@/lib/sync/editorLease";
 import { assertNoActiveGraphNamespace, GoogleDriveWebGraphTransport } from "@/lib/googleDrive/graphTransport";
-import { BACKUP_GRAPH_PUBLICATION_ENABLED } from "@/lib/restore/backupGraph";
 import { InternalWebGraphWorkflow, WEB_GRAPH_RESTORE_ENABLED } from "@/lib/restore/webGraphWorkflow";
 
 export type DriveRefreshStatus = {
@@ -41,7 +40,6 @@ export async function readDriveManifestPreview(accessToken: string) {
 export async function readVerifiedDriveBackupPreview(session: VerifiedGoogleDriveSession) {
   assertGoogleDriveSession(session.token, session.accountId);
   if (WEB_GRAPH_RESTORE_ENABLED) {
-    if (!BACKUP_GRAPH_PUBLICATION_ENABLED) throw new Error("Graph Backup and Restore must be released together.");
     const graph = await GoogleDriveWebGraphTransport.open(session);
     if (graph) return { scan: graph.previewScan(), manifestPreview: null, error: null, graphBackup: true };
   }
@@ -58,7 +56,6 @@ export function refreshLatestDriveMetadataSafely(token: GoogleDriveToken, accoun
   const promise = (async (): Promise<RefreshResult> => {
     assertGoogleDriveSession(token, accountId);
     if (WEB_GRAPH_RESTORE_ENABLED) {
-      if (!BACKUP_GRAPH_PUBLICATION_ENABLED) throw new Error("Graph Backup and Restore must be released together.");
       const session = await verifyAndActivateGoogleDriveSession(token);
       if (session.accountId !== accountId) throw new Error("Google account changed before Restore.");
       const graph = await GoogleDriveWebGraphTransport.open(session);

@@ -72,8 +72,9 @@ async function fixture(accountId: string) {
 export async function runWebGraphRuntime() {
   const tests: string[] = []; let fixtureNumber = 0;
   const newFixture = () => fixture(`graph-runtime-${++fixtureNumber}`);
-  check(!BACKUP_GRAPH_PUBLICATION_ENABLED && !INCREMENTAL_BACKUP_PUBLICATION_ENABLED && !WEB_GRAPH_RESTORE_ENABLED, "Production gate enabled");
-  tests.push("production gates disabled");
+  check(!BACKUP_GRAPH_PUBLICATION_ENABLED && !INCREMENTAL_BACKUP_PUBLICATION_ENABLED && WEB_GRAPH_RESTORE_ENABLED,
+    "Only the coordinated graph Restore route may be enabled on Web");
+  tests.push("Web publication disabled; coordinated graph Restore enabled");
   const { store, workflow } = await newFixture();
   const rootState = await loadWebGraphState(store.accountId, store.lineageId);
   check(rootState?.trust === "VERIFIED" && rootState.published && rootState.applied === null, "Verified root is not durable or fabricated a Restore event");

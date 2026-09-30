@@ -15,7 +15,7 @@ import { getActiveAccountId, withAccountSyncLock } from "../sync/accountContext"
 import { withLocalVaultUpdate } from "../sync/editorLease";
 import { validateSyncCandidate } from "../sync/validateSyncCandidate";
 
-export const WEB_GRAPH_RESTORE_ENABLED = false;
+export const WEB_GRAPH_RESTORE_ENABLED = true;
 export type WebGraphTransport = {
   accountId: string; lineageId: string;
   assertAccount(): void;
