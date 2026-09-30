@@ -62,6 +62,21 @@ export async function loadWebGraphState(accountId: string, lineageId: string) {
   });
 }
 
+/** Lightweight notice snapshot: graph position plus dirty indicators, never Vault payloads. */
+export async function readWebGraphNoticeState(accountId: string, lineageId: string) {
+  current(accountId);
+  return backupGraphStorageTransaction<{ state: WebGraphState | null; pending: boolean }>("readonly", (tx, finish) => {
+    const state = tx.objectStore(STATES).get(graphStateKey(accountId, lineageId));
+    const journal = tx.objectStore(JOURNAL).getAll(accountStorageRange(accountId));
+    const counts = graphOverlayStores.map((name) => tx.objectStore(name).count(accountStorageRange(accountId)));
+    reads([state, journal, ...counts], () => safely(tx, () => {
+      current(accountId);
+      finish({ state: state.result ?? null,
+        pending: journal.result.some((op: LocalSyncOperation) => op.status === "pending") || counts.some((count) => count.result > 0) });
+    }));
+  });
+}
+
 /** One consistent IDB snapshot. Empty work reads no metadata bundle or payload rows. */
 export async function captureWebGraphSnapshot(accountId: string, lineageId: string, includeBundle = false): Promise<WebGraphSnapshot> {
   current(accountId);

@@ -13,6 +13,7 @@
     "verify:drive-auth": "tsx scripts/verify-drive-auth-restore.ts",
     "verify:graph-runtime": "node scripts/verify-web-graph-runtime.mjs",
     "verify:graph-drive": "node scripts/verify-web-graph-drive.mjs",
+    "verify:latest-backup": "tsx scripts/verify-latest-backup-notice.ts",
     "verify:android-backup": "tsx scripts/verify-android-backup-directory.ts",
     "verify:quran": "tsx scripts/verify-quran-phase1.ts && tsx scripts/verify-quran-phase2.ts && tsx scripts/verify-quran-phase3.ts",
     "verify:pdf-performance": "node scripts/verify-pdf-performance.mjs",

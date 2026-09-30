@@ -30,6 +30,7 @@ import { getActiveAccountId } from "@/lib/sync/accountContext";
 import { computeBundleRevision } from "@/lib/sync/revision";
 import { getGoogleDriveStartupAction } from "@/lib/googleDrive/authPolicy";
 import { getDriveRefreshStatus, readVerifiedDriveBackupPreview, refreshLatestDriveMetadataSafely, subscribeDriveRefresh } from "@/lib/sync/driveRefresh";
+import type { WebLatestBackupNotice } from "@/lib/restore/latestBackupNotice";
 
 export type GoogleDriveConnectionStatus =
   | "setup-needed"
@@ -56,6 +57,7 @@ type ConnectionState = {
   manifestPreview: DriveManifestPreview | null;
   metadataRestore: MetadataRestoreBundle | null;
   error: string | null;
+  latestBackup: WebLatestBackupNotice | null;
 };
 
 function createInitialState(): ConnectionState {
@@ -68,6 +70,7 @@ function createInitialState(): ConnectionState {
     manifestPreview: null,
     metadataRestore: null,
     error: hasGoogleClientId() ? null : "Add a Google OAuth client ID before connecting to Drive.",
+    latestBackup: null,
   };
 }
 
@@ -112,7 +115,7 @@ export function useGoogleDriveConnection() {
         return;
       }
       if (startupAction === "disconnected") {
-        setState((current) => ({ ...current, status: "disconnected", token: null, accountId: null, scan: null, manifestPreview: null, error: null }));
+        setState((current) => ({ ...current, status: "disconnected", token: null, accountId: null, scan: null, manifestPreview: null, error: null, latestBackup: null }));
         return;
       }
 
@@ -145,7 +148,7 @@ export function useGoogleDriveConnection() {
           try {
             if (localMetadata) await ensureBaseForBundle(localMetadata);
             if (cancelled || currentRefreshId !== refreshId) return;
-            setState((current) => ({ ...current, status: "connected", token: verifiedToken, accountId, metadataRestore: localMetadata }));
+            setState((current) => ({ ...current, status: "connected", token: verifiedToken, accountId, metadataRestore: localMetadata, latestBackup: null }));
             const refreshed = await refreshLatestDriveMetadataSafely(verifiedToken, accountId);
             assertGoogleDriveSession(verifiedToken, accountId);
             if (cancelled || currentRefreshId !== refreshId) return;
@@ -157,6 +160,7 @@ export function useGoogleDriveConnection() {
               manifestPreview: refreshed.manifestPreview,
               metadataRestore: refreshed.metadataRestore,
               error: null,
+              latestBackup: refreshed.latestBackup,
             });
           } catch (error) {
             if (cancelled || currentRefreshId !== refreshId) return;
@@ -168,6 +172,7 @@ export function useGoogleDriveConnection() {
               manifestPreview: null,
               metadataRestore: localMetadata,
               error: `The automatic safe sync check stopped without replacing local work. ${getErrorMessage(error)}`,
+              latestBackup: null,
             });
           }
         })
@@ -180,10 +185,12 @@ export function useGoogleDriveConnection() {
     void refreshSession();
     const handleSessionChange = () => void refreshSession();
     window.addEventListener("myvault-google-drive-session-changed", handleSessionChange);
+    window.addEventListener("focus", handleSessionChange);
 
     return () => {
       cancelled = true;
       window.removeEventListener("myvault-google-drive-session-changed", handleSessionChange);
+      window.removeEventListener("focus", handleSessionChange);
     };
   }, []);
 
@@ -211,6 +218,7 @@ export function useGoogleDriveConnection() {
         manifestPreview: refreshed.manifestPreview,
         metadataRestore: refreshed.metadataRestore,
         error: null,
+        latestBackup: refreshed.latestBackup,
       });
       return token;
     } catch (error) {
@@ -251,6 +259,7 @@ export function useGoogleDriveConnection() {
         manifestPreview: refreshed.manifestPreview,
         metadataRestore: refreshed.metadataRestore,
         error: null,
+        latestBackup: refreshed.latestBackup,
       });
       return token;
     } catch (error) {
@@ -273,6 +282,7 @@ export function useGoogleDriveConnection() {
       manifestPreview: null,
       metadataRestore: null,
       error: null,
+      latestBackup: null,
     });
   }, []);
 
@@ -299,6 +309,7 @@ export function useGoogleDriveConnection() {
         manifestPreview: preview.manifestPreview,
         metadataRestore: scan.ready ? current.metadataRestore : null,
         error: preview.error,
+        latestBackup: null,
       }));
       return scan;
     } catch (error) {
@@ -329,6 +340,7 @@ export function useGoogleDriveConnection() {
           scan: previewResult.scan,
           manifestPreview: null,
           error: previewResult.error,
+          latestBackup: null,
         }));
         return null;
       }
@@ -343,6 +355,7 @@ export function useGoogleDriveConnection() {
         manifestPreview,
         metadataRestore: current.metadataRestore?.cloudVersion === manifestPreview.manifest.cloudVersion ? current.metadataRestore : null,
         error: manifestPreview.issues.length ? "Manifest loaded, but it has warnings to review." : null,
+        latestBackup: null,
       }));
 
       return manifestPreview;
@@ -369,12 +382,17 @@ export function useGoogleDriveConnection() {
         manifestPreview: refreshed.manifestPreview,
         metadataRestore: refreshed.metadataRestore,
         error: refreshed.staged ? getDriveRefreshStatus(session.accountId).error : null,
+        latestBackup: refreshed.latestBackup,
       }));
       return refreshed.staged ? null : refreshed.metadataRestore;
     } catch (error) {
       setState((current) => ({ ...current, status: isGoogleDriveInteractionRequired(error) ? "reauth-required" : "error", error: getErrorMessage(error) }));
       return null;
     }
+  }, []);
+
+  const dismissLatestBackup = useCallback(() => {
+    setState((current) => ({ ...current, latestBackup: null }));
   }, []);
 
   return useMemo(
@@ -392,7 +410,8 @@ export function useGoogleDriveConnection() {
       scanForMyVault,
       prepareRestorePreview,
       restoreMetadata,
+      dismissLatestBackup,
     }),
-    [chooseAnotherAccount, connect, disconnect, prepareRestorePreview, restoreMetadata, scanForMyVault, state, background],
+    [chooseAnotherAccount, connect, disconnect, dismissLatestBackup, prepareRestorePreview, restoreMetadata, scanForMyVault, state, background],
   );
 }

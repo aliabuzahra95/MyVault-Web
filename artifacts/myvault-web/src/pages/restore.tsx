@@ -777,6 +777,28 @@ export default function RestorePage() {
         driveScope={driveConnection.driveScope}
       />
 
+      {driveConnection.latestBackup ? (
+        <section className={cn("rounded-lg border p-5",
+          driveConnection.latestBackup.status === "NEWER" ? "border-emerald-200 bg-emerald-50" : "border-amber-200 bg-amber-50")}>
+          <h2 className="text-base font-bold text-slate-950">
+            {driveConnection.latestBackup.status === "BLOCKED" ? "Backup needs attention" : "Newer backup available"}
+          </h2>
+          <p className="mt-2 text-sm leading-6 text-slate-700">{driveConnection.latestBackup.message}</p>
+          <div className="mt-4 flex gap-3">
+            {driveConnection.latestBackup.status === "NEWER" ? (
+              <button type="button" disabled={driveConnection.isBusy} onClick={() => void driveConnection.restoreMetadata()}
+                className="inline-flex h-10 items-center gap-2 rounded-md bg-emerald-800 px-4 text-sm font-bold text-white disabled:opacity-50">
+                <Download className="h-4 w-4" /> Restore now
+              </button>
+            ) : null}
+            <button type="button" onClick={driveConnection.dismissLatestBackup}
+              className="inline-flex h-10 items-center rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-slate-700">
+              {driveConnection.latestBackup.status === "NEWER" ? "Later" : "Close"}
+            </button>
+          </div>
+        </section>
+      ) : null}
+
       {driveConnection.scan?.rootFolder?.name === BACKUP_GRAPH_NAMESPACE ? (
         <section className="border-t border-slate-200 py-6">
           <h2 className="text-base font-bold text-slate-950">Google Drive backup</h2>

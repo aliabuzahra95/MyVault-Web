@@ -11,6 +11,7 @@ import { applyIncomingDriveBundleSafely } from "@/lib/sync/safePull";
 import { ActiveEditorError, withLocalVaultUpdate } from "@/lib/sync/editorLease";
 import { assertNoActiveGraphNamespace, GoogleDriveWebGraphTransport } from "@/lib/googleDrive/graphTransport";
 import { InternalWebGraphWorkflow, WEB_GRAPH_RESTORE_ENABLED } from "@/lib/restore/webGraphWorkflow";
+import { loadLastNotifiedGraphTip, markGraphTipNotified, type WebLatestBackupNotice } from "@/lib/restore/latestBackupNotice";
 
 export type DriveRefreshStatus = {
   phase: "idle" | "checking" | "downloading" | "validating" | "applying" | "current" | "staged" | "error";
@@ -46,7 +47,7 @@ export async function readVerifiedDriveBackupPreview(session: VerifiedGoogleDriv
   return { ...await readDriveManifestPreview(session.token.accessToken), graphBackup: false };
 }
 
-type RefreshResult = { scan: MyVaultDriveScan; manifestPreview: DriveManifestPreview | null; metadataRestore: MetadataRestoreBundle | null; staged: boolean; graphBackup: boolean };
+type RefreshResult = { scan: MyVaultDriveScan; manifestPreview: DriveManifestPreview | null; metadataRestore: MetadataRestoreBundle | null; staged: boolean; graphBackup: boolean; latestBackup: WebLatestBackupNotice | null };
 const active = new Map<string, { token: string; promise: Promise<RefreshResult> }>();
 
 export function refreshLatestDriveMetadataSafely(token: GoogleDriveToken, accountId: string, manualRestore = false): Promise<RefreshResult> {
@@ -61,16 +62,24 @@ export function refreshLatestDriveMetadataSafely(token: GoogleDriveToken, accoun
       const graph = await GoogleDriveWebGraphTransport.open(session);
       if (graph) {
         // Graph backups remain strictly manual. Focus/load checks must not apply them.
+        let latestBackup: WebLatestBackupNotice | null = null;
         if (manualRestore) {
           update(accountId, { phase: "applying", error: null });
           await new InternalWebGraphWorkflow(graph).restore();
+        } else {
+          latestBackup = await new InternalWebGraphWorkflow(graph).latestBackupNotice(
+            loadLastNotifiedGraphTip(accountId, graph.lineageId),
+          );
+          if (latestBackup?.remoteCommitId) markGraphTipNotified(accountId, graph.lineageId, latestBackup.remoteCommitId);
         }
         const metadataRestore = await loadMetadataRestoreBundle();
         assertGoogleDriveSession(token, accountId);
-        update(accountId, { phase: manualRestore ? "current" : "staged", checkedAt: Date.now(),
-          ...(manualRestore ? { appliedAt: Date.now(), error: null } : { error: "A graph backup is available. Use Restore to check/apply it; it will not be applied automatically." }) });
+        const current = manualRestore || latestBackup === null;
+        const phase = current ? "current" : latestBackup?.status === "BLOCKED" ? "error" : "staged";
+        update(accountId, { phase, checkedAt: Date.now(),
+          ...(manualRestore ? { appliedAt: Date.now(), error: null } : { error: latestBackup?.message ?? null }) });
         return { scan: graph.previewScan(),
-          manifestPreview: null, metadataRestore, staged: !manualRestore, graphBackup: true };
+          manifestPreview: null, metadataRestore, staged: !current, graphBackup: true, latestBackup };
       }
     }
     return withAccountSyncLock(accountId, async () => {
@@ -86,17 +95,17 @@ export function refreshLatestDriveMetadataSafely(token: GoogleDriveToken, accoun
     const local = await loadMetadataRestoreBundle();
     if (!preview.manifestPreview) {
       update(accountId, { phase: "idle" });
-      return { ...preview, metadataRestore: local, staged: false, graphBackup: false };
+      return { ...preview, metadataRestore: local, staged: false, graphBackup: false, latestBackup: null };
     }
     if ("incrementalBackup" in preview.manifestPreview.manifest && !manualRestore) {
       update(accountId, { phase: "staged", error: "An incremental backup is available. Use Restore to apply it; it will not be applied automatically." });
-      return { ...preview, metadataRestore: local, staged: true, graphBackup: false };
+      return { ...preview, metadataRestore: local, staged: true, graphBackup: false, latestBackup: null };
     }
     const pinned = await computeManifestRevision(preview.manifestPreview.manifest);
     const [applied, base] = await Promise.all([loadLastAppliedDriveManifest(), loadLocalSyncBase()]);
     if (local && applied?.manifestId === preview.scan.manifestFile!.id && applied.revisionId === pinned.revisionId && applied.bundleRevisionId === base?.revision.revisionId) {
       update(accountId, { phase: "current" });
-      return { ...preview, metadataRestore: local, staged: false, graphBackup: false };
+      return { ...preview, metadataRestore: local, staged: false, graphBackup: false, latestBackup: null };
     }
     update(accountId, { phase: "downloading" });
     const verification = await verifyDriveManifestFiles(token.accessToken, preview.manifestPreview.manifest, preview.scan);
@@ -128,10 +137,10 @@ export function refreshLatestDriveMetadataSafely(token: GoogleDriveToken, accoun
     } catch (error) {
       assertGoogleDriveSession(token, accountId);
       update(accountId, { phase: "staged", error: error instanceof Error ? error.message : "The update needs review. Local work was preserved." });
-      return { ...preview, metadataRestore: local, staged: true, graphBackup: false };
+      return { ...preview, metadataRestore: local, staged: true, graphBackup: false, latestBackup: null };
     }
     update(accountId, { phase: "current", appliedAt: Date.now(), error: null });
-    return { ...preview, metadataRestore: incoming, staged: false, graphBackup: false };
+    return { ...preview, metadataRestore: incoming, staged: false, graphBackup: false, latestBackup: null };
     });
   })().catch((error) => {
     update(accountId, { phase: "error", error: error instanceof Error ? error.message : "Drive is unavailable. Local data was preserved." });

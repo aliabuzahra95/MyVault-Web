@@ -7,13 +7,14 @@ import { BACKUP_BINARY_READER_CAPABILITY, BackupBinaryResolution, binaryManifest
 import { buildMetadataRestoreBundle, type MetadataRestoreBundle } from "./metadataRestore";
 import { type DriveSyncManifest } from "./driveManifestPreview";
 import { captureWebGraphSnapshot, completeWebGraphOperation, loadStagedGraphObjects, loadWebGraphOperation,
-  markGraphObjectVerified, pendingWebGraphOperations, stageWebGraphOperation,
+  markGraphObjectVerified, pendingWebGraphOperations, readWebGraphNoticeState, stageWebGraphOperation,
   type StagedGraphObject, type WebGraphOperation, type WebGraphPosition, type WebGraphSnapshot, type WebGraphState } from "./webGraphStore";
 import { ANDROID_BODY_BLOCK_TYPES, buildSyncPreflight, type SyncPendingChanges } from "../sync/syncPreflight";
 import { canonicalJson } from "../sync/revision";
 import { getActiveAccountId, withAccountSyncLock } from "../sync/accountContext";
 import { withLocalVaultUpdate } from "../sync/editorLease";
 import { validateSyncCandidate } from "../sync/validateSyncCandidate";
+import { decideLatestBackupNotice, type WebLatestBackupNotice } from "./latestBackupNotice";
 
 export const WEB_GRAPH_RESTORE_ENABLED = true;
 export type WebGraphTransport = {
@@ -152,6 +153,28 @@ export function pendingGraphChanges(snapshot: WebGraphSnapshot): { changes: Back
 
 export class InternalWebGraphWorkflow {
   constructor(private readonly store: WebGraphTransport, private readonly boundary: (phase: string) => Promise<void> = async () => {}) {}
+
+  /** Commit metadata only. This never downloads Vault payloads or applies Restore. */
+  async latestBackupNotice(lastNotifiedRemoteCommitId: string | null): Promise<WebLatestBackupNotice | null> {
+    checkAccount(this.store);
+    const inventory = await this.store.commits();
+    const graph = await BackupGraph.discover(inventory, this.store.accountId, this.store.lineageId);
+    if (graph.status !== "SINGLE_TIP") {
+      return decideLatestBackupNotice(graph.status, graph.tips.length === 1 ? graph.tips[0] : null, false, lastNotifiedRemoteCommitId);
+    }
+    const snapshot = await readWebGraphNoticeState(this.store.accountId, this.store.lineageId);
+    if (snapshot.state?.trust === "INVALIDATED") {
+      return decideLatestBackupNotice("DIVERGENT", graph.tips[0], false, lastNotifiedRemoteCommitId);
+    }
+    let applied: WebGraphPosition | null;
+    try {
+      applied = materializedPosition(graph, inventory, snapshot.state);
+    } catch {
+      return decideLatestBackupNotice("DIVERGENT", graph.tips[0], false, lastNotifiedRemoteCommitId);
+    }
+    const plan = graph.plan(applied?.commit.commitId ?? null);
+    return decideLatestBackupNotice(plan.status, graph.tips[0] ?? null, snapshot.pending, lastNotifiedRemoteCommitId);
+  }
 
   async publish(): Promise<WebGraphResult> {
     return withAccountSyncLock(this.store.accountId, async () => {
