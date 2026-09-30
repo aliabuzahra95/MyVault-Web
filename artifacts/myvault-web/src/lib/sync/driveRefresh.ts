@@ -1,5 +1,5 @@
 import { downloadDriveFileJson, findMyVaultDriveMap, type MyVaultDriveScan } from "@/lib/googleDrive/driveClient";
-import { assertGoogleDriveSession } from "@/lib/googleDrive/accountSession";
+import { assertGoogleDriveSession, verifyAndActivateGoogleDriveSession, type VerifiedGoogleDriveSession } from "@/lib/googleDrive/accountSession";
 import type { GoogleDriveToken } from "@/lib/googleDrive/identity";
 import { buildDriveManifestPreview, parseDriveSyncManifest, type DriveManifestPreview } from "@/lib/restore/driveManifestPreview";
 import type { MetadataRestoreBundle } from "@/lib/restore/metadataRestore";
@@ -9,7 +9,9 @@ import { withAccountSyncLock } from "@/lib/sync/accountContext";
 import { computeBundleRevision, computeManifestRevision } from "@/lib/sync/revision";
 import { applyIncomingDriveBundleSafely } from "@/lib/sync/safePull";
 import { ActiveEditorError, withLocalVaultUpdate } from "@/lib/sync/editorLease";
-import { assertNoActiveGraphNamespace } from "@/lib/googleDrive/graphTransport";
+import { assertNoActiveGraphNamespace, GoogleDriveWebGraphTransport } from "@/lib/googleDrive/graphTransport";
+import { BACKUP_GRAPH_PUBLICATION_ENABLED } from "@/lib/restore/backupGraph";
+import { InternalWebGraphWorkflow, WEB_GRAPH_RESTORE_ENABLED } from "@/lib/restore/webGraphWorkflow";
 
 export type DriveRefreshStatus = {
   phase: "idle" | "checking" | "downloading" | "validating" | "applying" | "current" | "staged" | "error";
@@ -36,14 +38,45 @@ export async function readDriveManifestPreview(accessToken: string) {
   return { scan, manifestPreview: buildDriveManifestPreview(parsed.manifest, parsed.issues), error: null };
 }
 
-type RefreshResult = { scan: MyVaultDriveScan; manifestPreview: DriveManifestPreview | null; metadataRestore: MetadataRestoreBundle | null; staged: boolean };
+export async function readVerifiedDriveBackupPreview(session: VerifiedGoogleDriveSession) {
+  assertGoogleDriveSession(session.token, session.accountId);
+  if (WEB_GRAPH_RESTORE_ENABLED) {
+    if (!BACKUP_GRAPH_PUBLICATION_ENABLED) throw new Error("Graph Backup and Restore must be released together.");
+    const graph = await GoogleDriveWebGraphTransport.open(session);
+    if (graph) return { scan: graph.previewScan(), manifestPreview: null, error: null, graphBackup: true };
+  }
+  return { ...await readDriveManifestPreview(session.token.accessToken), graphBackup: false };
+}
+
+type RefreshResult = { scan: MyVaultDriveScan; manifestPreview: DriveManifestPreview | null; metadataRestore: MetadataRestoreBundle | null; staged: boolean; graphBackup: boolean };
 const active = new Map<string, { token: string; promise: Promise<RefreshResult> }>();
 
 export function refreshLatestDriveMetadataSafely(token: GoogleDriveToken, accountId: string, manualRestore = false): Promise<RefreshResult> {
   const workKey = `${accountId}:${manualRestore ? "manual" : "automatic"}`;
   const existing = active.get(workKey);
   if (existing?.token === token.accessToken) return existing.promise;
-  const promise = withAccountSyncLock(accountId, async () => {
+  const promise = (async (): Promise<RefreshResult> => {
+    assertGoogleDriveSession(token, accountId);
+    if (WEB_GRAPH_RESTORE_ENABLED) {
+      if (!BACKUP_GRAPH_PUBLICATION_ENABLED) throw new Error("Graph Backup and Restore must be released together.");
+      const session = await verifyAndActivateGoogleDriveSession(token);
+      if (session.accountId !== accountId) throw new Error("Google account changed before Restore.");
+      const graph = await GoogleDriveWebGraphTransport.open(session);
+      if (graph) {
+        // Graph backups remain strictly manual. Focus/load checks must not apply them.
+        if (manualRestore) {
+          update(accountId, { phase: "applying", error: null });
+          await new InternalWebGraphWorkflow(graph).restore();
+        }
+        const metadataRestore = await loadMetadataRestoreBundle();
+        assertGoogleDriveSession(token, accountId);
+        update(accountId, { phase: manualRestore ? "current" : "staged", checkedAt: Date.now(),
+          ...(manualRestore ? { appliedAt: Date.now(), error: null } : { error: "A graph backup is available. Use Restore to check/apply it; it will not be applied automatically." }) });
+        return { scan: graph.previewScan(),
+          manifestPreview: null, metadataRestore, staged: !manualRestore, graphBackup: true };
+      }
+    }
+    return withAccountSyncLock(accountId, async () => {
     assertGoogleDriveSession(token, accountId);
     update(accountId, { phase: "checking", error: null });
     await assertNoActiveGraphNamespace(token.accessToken);
@@ -56,17 +89,17 @@ export function refreshLatestDriveMetadataSafely(token: GoogleDriveToken, accoun
     const local = await loadMetadataRestoreBundle();
     if (!preview.manifestPreview) {
       update(accountId, { phase: "idle" });
-      return { ...preview, metadataRestore: local, staged: false };
+      return { ...preview, metadataRestore: local, staged: false, graphBackup: false };
     }
     if ("incrementalBackup" in preview.manifestPreview.manifest && !manualRestore) {
       update(accountId, { phase: "staged", error: "An incremental backup is available. Use Restore to apply it; it will not be applied automatically." });
-      return { ...preview, metadataRestore: local, staged: true };
+      return { ...preview, metadataRestore: local, staged: true, graphBackup: false };
     }
     const pinned = await computeManifestRevision(preview.manifestPreview.manifest);
     const [applied, base] = await Promise.all([loadLastAppliedDriveManifest(), loadLocalSyncBase()]);
     if (local && applied?.manifestId === preview.scan.manifestFile!.id && applied.revisionId === pinned.revisionId && applied.bundleRevisionId === base?.revision.revisionId) {
       update(accountId, { phase: "current" });
-      return { ...preview, metadataRestore: local, staged: false };
+      return { ...preview, metadataRestore: local, staged: false, graphBackup: false };
     }
     update(accountId, { phase: "downloading" });
     const verification = await verifyDriveManifestFiles(token.accessToken, preview.manifestPreview.manifest, preview.scan);
@@ -98,11 +131,12 @@ export function refreshLatestDriveMetadataSafely(token: GoogleDriveToken, accoun
     } catch (error) {
       assertGoogleDriveSession(token, accountId);
       update(accountId, { phase: "staged", error: error instanceof Error ? error.message : "The update needs review. Local work was preserved." });
-      return { ...preview, metadataRestore: local, staged: true };
+      return { ...preview, metadataRestore: local, staged: true, graphBackup: false };
     }
     update(accountId, { phase: "current", appliedAt: Date.now(), error: null });
-    return { ...preview, metadataRestore: incoming, staged: false };
-  }).catch((error) => {
+    return { ...preview, metadataRestore: incoming, staged: false, graphBackup: false };
+    });
+  })().catch((error) => {
     update(accountId, { phase: "error", error: error instanceof Error ? error.message : "Drive is unavailable. Local data was preserved." });
     throw error;
   });

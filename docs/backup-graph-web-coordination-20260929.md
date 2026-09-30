@@ -1,5 +1,40 @@
 # Gated Web Backup Graph Coordination
 
+## Latest Gated Routing Work
+
+September 30 continuation starts at Android `8711d78` and Web `b60dd68`, with
+`recovery-before-production-graph-routing-20260929-214738` in both repositories.
+Normal manual Backup and Restore now have paired gated graph branches. The
+transport discovers an existing canonical graph namespace using the verified
+normal Web Google session; initial namespace enrollment remains Android-only.
+Graph availability and Restore preview no longer depend on a legacy manifest.
+Check Drive uses the same read-only graph-aware preview. Load/focus checks never
+apply graph Restore automatically. Historical legacy routes remain available
+only when no graph namespace competes with them.
+
+Publication and Restore positions are strictly independent. A verified own
+publication is sufficient to recognize the already-current materialized state,
+without recording a fictitious Restore. A later verified Restore can become the
+next publication parent while retaining the actual Restore position.
+
+All production graph flags remain false. No Web deployment or push occurred.
+The latest 32 real Chromium/IndexedDB cases, auth/legacy Restore contracts,
+typecheck and production build pass. The real disposable Android writer's fork
+also passed the Web reader: 14 commits, two valid tips, no branch selection.
+Normal production OAuth cross-visibility is still pending user sign-in. Broker
+authentication is a different OAuth client and is not a substitute for that proof.
+The user reported that the automated test browser never permits Google login;
+the latest attempt ended with `Popup window closed` before any Web Drive request.
+That browser route is closed. Production Web graph participation cannot be
+enabled or deployed on this evidence. A later proof must use an account session
+from the user's normal browser without copying credentials or weakening scope.
+
+Web also reconstructed Android's real disposable Drive targeted-Restore fixture:
+nine immutable commits, an 8192-byte replacement and an exact attachment
+deletion. This validates reader compatibility, not normal OAuth visibility.
+
+## Earlier Compatibility Stage
+
 ## Release Status
 
 This is validated compatibility groundwork, not production enablement.
@@ -22,7 +57,9 @@ immutable bytes/receipts, and attachment fingerprints.
 
 Published and applied positions are separate. A Restore advances only applied
 position. Publication installs the verified captured canonical base and advances
-publication/applied position while preserving newer local overlays.
+publication position only, while preserving newer local overlays. The original
+compatibility-stage implementation's applied-position coupling was corrected
+during the latest gated routing work.
 
 Frozen publication intent survives browser process death. Binary/metadata/delta
 objects are created first; commit is last. Every object receives exact SHA-256

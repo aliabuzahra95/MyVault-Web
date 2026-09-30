@@ -1,8 +1,8 @@
-import { BACKUP_GRAPH_NAMESPACE, verifyGraphObject, type GraphObject } from "../restore/backupGraph";
+import { BACKUP_GRAPH_NAMESPACE, verifyGraphObject, parseGraphCommit, type GraphObject } from "../restore/backupGraph";
 import type { StagedGraphObject } from "../restore/webGraphStore";
 import type { WebGraphTransport } from "../restore/webGraphWorkflow";
 import { assertGoogleDriveSession, type VerifiedGoogleDriveSession } from "./accountSession";
-import { listNamedDriveFolders, GoogleDriveRequestError } from "./driveClient";
+import { listNamedDriveFolders, GoogleDriveRequestError, type MyVaultDriveScan } from "./driveClient";
 
 type GraphFile = { id: string; name: string; parents?: string[]; size?: string; sha256Checksum?: string; mimeType?: string; trashed?: boolean };
 export type VerifiedGraphLayout = { rootId: string; lineageId: string; checkpoints: string; commits: string; deltas: string; binaries: string };
@@ -24,7 +24,43 @@ export class GoogleDriveWebGraphTransport implements WebGraphTransport {
   constructor(private readonly session: VerifiedGoogleDriveSession, private readonly layout: VerifiedGraphLayout) {
     this.accountId = session.accountId; this.lineageId = layout.lineageId;
   }
+  /** Existing namespaces only. Android establishes the initial production baseline. */
+  static async open(session: VerifiedGoogleDriveSession): Promise<GoogleDriveWebGraphTransport | null> {
+    assertGoogleDriveSession(session.token, session.accountId);
+    const roots = await listNamedDriveFolders(session.token.accessToken, BACKUP_GRAPH_NAMESPACE);
+    assertGoogleDriveSession(session.token, session.accountId);
+    if (!roots.length) return null;
+    if (roots.length !== 1) throw new Error("Multiple graph namespaces require reconciliation. No branch was selected.");
+    const placeholder = new GoogleDriveWebGraphTransport(session, { rootId: roots[0].id, lineageId: "unresolved", checkpoints: "", commits: "", deltas: "", binaries: "" });
+    const folders = await placeholder.listing(roots[0].id);
+    const layout: VerifiedGraphLayout = { rootId: roots[0].id, lineageId: "unresolved", checkpoints: "", commits: "", deltas: "", binaries: "" };
+    for (const name of ["checkpoints", "commits", "deltas", "binaries"] as const) {
+      const matching = folders.filter((file) => file.name === name);
+      if (matching.length !== 1 || matching[0].mimeType !== "application/vnd.google-apps.folder"
+        || matching[0].parents?.length !== 1 || matching[0].parents[0] !== layout.rootId) throw new Error("Incomplete or ambiguous graph namespace.");
+      layout[name] = matching[0].id;
+    }
+    const commits = await placeholder.listing(layout.commits);
+    if (!commits.length) throw new Error("Initial graph backup is not committed yet. Wait for the original device to finish.");
+    const first = commits[0]; const size = Number(first.size);
+    if (!first.sha256Checksum || !Number.isSafeInteger(size) || size < 1 || size > 65536
+      || first.parents?.length !== 1 || first.parents[0] !== layout.commits) throw new Error("Invalid graph commit descriptor.");
+    const transport = new GoogleDriveWebGraphTransport(session, layout);
+    const bytes = await transport.read(first.id); if (!bytes) throw new Error("Graph commit disappeared during discovery.");
+    const object: GraphObject = { objectRef: { cloudFileId: first.id, sha256: first.sha256Checksum, size }, bytes };
+    const commit = await parseGraphCommit(object);
+    if (commit.accountId !== session.accountId) throw new Error("Graph belongs to a different Drive account.");
+    layout.lineageId = commit.lineageId;
+    const resolved = new GoogleDriveWebGraphTransport(session, layout);
+    resolved.verifiedCommits.set(first.id, { objectRef: { ...object.objectRef }, bytes: bytes.slice() });
+    return resolved;
+  }
   assertAccount() { assertGoogleDriveSession(this.session.token, this.accountId); }
+  get rootId() { return this.layout.rootId; }
+  previewScan(): MyVaultDriveScan {
+    return { scannedAt: new Date().toISOString(), rootFolder: { id: this.rootId, name: BACKUP_GRAPH_NAMESPACE },
+      folders: { metadata: null, files: null, manifests: null, backups: null }, manifestFile: null, ready: true, missingPaths: [] };
+  }
   private async request(url: string, init: RequestInit = {}) {
     this.assertAccount();
     const headers = new Headers(init.headers); headers.set("Authorization", `Bearer ${this.session.token.accessToken}`);
@@ -47,11 +83,15 @@ export class GoogleDriveWebGraphTransport implements WebGraphTransport {
   }
   async verifyLayout() {
     const root = await this.json<GraphFile>(`${API}/files/${encodeURIComponent(this.layout.rootId)}?fields=${fields}`);
-    if (root.trashed || root.mimeType !== "application/vnd.google-apps.folder") throw new Error("Graph root is unavailable.");
+    if (root.trashed || root.name !== BACKUP_GRAPH_NAMESPACE || root.mimeType !== "application/vnd.google-apps.folder") throw new Error("Graph root is unavailable or changed.");
+    const roots = await listNamedDriveFolders(this.session.token.accessToken, BACKUP_GRAPH_NAMESPACE);
+    this.assertAccount();
+    if (roots.length !== 1 || roots[0].id !== this.layout.rootId) throw new Error("Graph namespace is missing or ambiguous.");
     const children = await this.listing(this.layout.rootId);
     for (const name of ["checkpoints", "commits", "deltas", "binaries"] as const) {
       const matching = children.filter((f) => f.name === name && f.mimeType === "application/vnd.google-apps.folder");
-      if (matching.length !== 1 || matching[0].id !== this.layout[name]) throw new Error("Graph namespace is ambiguous or changed.");
+      if (matching.length !== 1 || matching[0].id !== this.layout[name]
+        || matching[0].parents?.length !== 1 || matching[0].parents[0] !== this.layout.rootId) throw new Error("Graph namespace is ambiguous or changed.");
     }
   }
   async commits(): Promise<GraphObject[]> {
@@ -60,7 +100,9 @@ export class GoogleDriveWebGraphTransport implements WebGraphTransport {
     const present = new Set<string>();
     for (const file of await this.listing(this.layout.commits)) {
       const size = Number(file.size);
-      if (!file.sha256Checksum || !/^[a-f0-9]{64}$/.test(file.sha256Checksum) || !Number.isSafeInteger(size) || size < 1 || size > 65536) throw new Error("Invalid graph commit object receipt.");
+      if (!file.sha256Checksum || !/^[a-f0-9]{64}$/.test(file.sha256Checksum) || !Number.isSafeInteger(size) || size < 1 || size > 65536
+        || file.trashed || file.mimeType === "application/vnd.google-apps.folder"
+        || file.parents?.length !== 1 || file.parents[0] !== this.layout.commits) throw new Error("Invalid graph commit object receipt.");
       present.add(file.id);
       const cached = this.verifiedCommits.get(file.id);
       // A fresh provider inventory is still required. Cached bytes can only be
@@ -92,7 +134,8 @@ export class GoogleDriveWebGraphTransport implements WebGraphTransport {
     if (!metadata.ok) throw new GoogleDriveRequestError(`Graph object lookup failed (${metadata.status}).`, metadata.status);
     const file = await metadata.json() as GraphFile;
     const allowed = [this.layout.checkpoints, this.layout.deltas, this.layout.commits, this.layout.binaries];
-    if (file.trashed || !file.parents?.some((parent) => allowed.includes(parent))) throw new Error("Graph read is outside the enrolled namespace.");
+    if (file.trashed || file.mimeType === "application/vnd.google-apps.folder"
+      || file.parents?.length !== 1 || !allowed.includes(file.parents[0])) throw new Error("Graph read is outside the enrolled namespace.");
     const response = await this.request(`${API}/files/${encodeURIComponent(id)}?alt=media`);
     if (!response.ok) throw new GoogleDriveRequestError(`Graph object download failed (${response.status}).`, response.status);
     const bytes = new Uint8Array(await response.arrayBuffer()); this.assertAccount(); return bytes;
@@ -115,7 +158,10 @@ export class GoogleDriveWebGraphTransport implements WebGraphTransport {
       if (start.status === 409) return;
       if (!start.ok) throw new GoogleDriveRequestError(`Graph upload initiation failed (${start.status}).`, start.status);
       const url = start.headers.get("Location");
-      if (!url || new URL(url).origin !== "https://www.googleapis.com") throw new Error("Unexpected resumable upload origin.");
+      if (!url) throw new Error("Missing resumable upload location.");
+      const location = new URL(url);
+      if (location.origin !== "https://www.googleapis.com" || location.pathname !== "/upload/drive/v3/files"
+        || location.username || location.password || location.hash) throw new Error("Unexpected resumable upload origin.");
       response = await this.request(url, { method: "PUT", headers: { "Content-Type": mimeType }, body: new Uint8Array(bytes) });
     }
     // Existing intended IDs are never updated. The caller must verify exact

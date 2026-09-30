@@ -213,7 +213,7 @@ export async function completeWebGraphOperation(accountId: string, operationId: 
           trust: "VERIFIED",
           originEpoch: (op.originalState?.originEpoch ?? 0) + (op.kind === "restore" ? 1 : 0),
           published: op.kind === "publish" ? op.next : op.originalState?.published ?? null,
-          applied: op.next,
+          applied: op.kind === "restore" ? op.next : op.originalState?.applied ?? null,
         } satisfies WebGraphState, graphStateKey(accountId, op.lineageId));
         if (op.kind === "publish") {
           const captured = new Map(op.capturedOperations.map((r) => [r.id, r]));

@@ -43,7 +43,9 @@ import { reconcileMetadataBundles } from "@/lib/sync/threeWayMerge";
 import { validateSyncCandidate } from "@/lib/sync/validateSyncCandidate";
 import { applyIncomingDriveBundleSafely } from "@/lib/sync/safePull";
 import { withLocalVaultUpdate } from "@/lib/sync/editorLease";
-import { assertNoActiveGraphNamespace } from "@/lib/googleDrive/graphTransport";
+import { assertNoActiveGraphNamespace, GoogleDriveWebGraphTransport } from "@/lib/googleDrive/graphTransport";
+import { BACKUP_GRAPH_PUBLICATION_ENABLED } from "@/lib/restore/backupGraph";
+import { InternalWebGraphWorkflow, WEB_GRAPH_RESTORE_ENABLED } from "@/lib/restore/webGraphWorkflow";
 
 export type DriveWriteBackProgress = {
   phase: "checking" | "preparing" | "uploading" | "committing" | "complete";
@@ -219,7 +221,22 @@ export async function writeWebsiteChangesToDrive({ accessToken, onProgress }: {
   if (!token || token.accessToken !== accessToken) {
     throw new Error("The Google account changed before backup began. Nothing was uploaded.");
   }
-  const { accountId } = await verifyAndActivateGoogleDriveSession(token);
+  const session = await verifyAndActivateGoogleDriveSession(token);
+  const { accountId } = session;
+  if (BACKUP_GRAPH_PUBLICATION_ENABLED) {
+    if (!WEB_GRAPH_RESTORE_ENABLED) throw new Error("Graph Backup and Restore must be released together.");
+    const graph = await GoogleDriveWebGraphTransport.open(session);
+    if (graph) {
+      onProgress?.({ phase: "checking", completedFiles: 0, totalFiles: 0, currentFileName: null });
+      const result = await new InternalWebGraphWorkflow(graph).publish();
+      const bundle = await loadMetadataRestoreBundle();
+      onProgress?.({ phase: "complete", completedFiles: result.metrics.deltasCreated + result.metrics.commitsCreated + result.metrics.binariesCreated,
+        totalFiles: result.metrics.deltasCreated + result.metrics.commitsCreated + result.metrics.binariesCreated, currentFileName: null });
+      return { status: result.status === "ALREADY_CURRENT" ? "no_changes" : "uploaded", cloudVersion: bundle?.cloudVersion ?? 0,
+        uploadedMetadataFiles: result.metrics.deltasCreated + result.metrics.commitsCreated,
+        uploadedAttachmentFiles: result.metrics.binariesCreated, repairedManifestEntries: 0, localStateUpdated: true };
+    }
+  }
   return withAccountSyncLock(accountId, async () => {
     onProgress?.({ phase: "checking", completedFiles: 0, totalFiles: 0, currentFileName: null });
     assertGoogleDriveSession(token, accountId);

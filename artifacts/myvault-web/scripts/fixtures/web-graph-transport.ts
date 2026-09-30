@@ -13,20 +13,21 @@ export async function verifyGraphTransportContracts() {
     deltas: "fixture-deltas", binaries: "fixture-binaries" };
   const store = new GoogleDriveWebGraphTransport({ accountId: previousAccount, token, profile: { permissionId: previousAccount } }, layout);
   let bytes = new TextEncoder().encode("immutable fixture"); let sha256 = await backupBytesSha256(bytes);
-  let mediaReads = 0; let sibling = false; let removed = false; let outside = false; let requests = 0;
+  let mediaReads = 0; let sibling = false; let removed = false; let outside = false; let multipleParents = false; let requests = 0;
   const json = (value: unknown) => Response.json(value);
   globalThis.fetch = async (input, init) => {
     requests++; const url = new URL(String(input));
     if (init?.method === "POST") return new Response(null, { status: 409 });
-    if (url.pathname.endsWith("/fixture-root")) return json({ id: layout.rootId, mimeType: "application/vnd.google-apps.folder" });
+    if (url.pathname.endsWith("/fixture-root")) return json({ id: layout.rootId, name: "MyVault Backup Graph v1", mimeType: "application/vnd.google-apps.folder" });
     if (url.pathname.endsWith("/files")) {
+      if (url.searchParams.get("q")!.includes("name = 'MyVault Backup Graph v1'")) return json({ files: [{ id: layout.rootId, name: "MyVault Backup Graph v1", mimeType: "application/vnd.google-apps.folder" }] });
       if (url.searchParams.get("q")!.includes(layout.rootId)) return json({ files: ["checkpoints", "commits", "deltas", "binaries"].map((name) => ({
-        id: layout[name as keyof typeof layout], name, mimeType: "application/vnd.google-apps.folder" })) });
+        id: layout[name as keyof typeof layout], name, mimeType: "application/vnd.google-apps.folder", parents: [layout.rootId] })) });
       return json({ files: removed ? [] : ["fixture-object", ...(sibling ? ["fixture-sibling"] : [])].map((id) => ({ id, name: id,
         sha256Checksum: sha256, size: String(bytes.length), parents: [layout.commits] })) });
     }
     if (url.searchParams.get("alt") === "media") { mediaReads++; return new Response(new Uint8Array(bytes)); }
-    return json({ id: "fixture-object", parents: [outside ? "not-enrolled" : layout.commits] });
+    return json({ id: "fixture-object", parents: multipleParents ? [layout.commits, "not-enrolled"] : [outside ? "not-enrolled" : layout.commits] });
   };
   const check = (condition: unknown, reason: string) => { if (!condition) throw new Error(reason); };
   try {
@@ -41,6 +42,10 @@ export async function verifyGraphTransportContracts() {
     outside = true; let refused = false;
     try { await store.read("fixture-object"); } catch { refused = true; }
     check(refused, "An unenrolled object was downloaded");
+    outside = false; multipleParents = true; refused = false;
+    const beforeMedia = mediaReads;
+    try { await store.read("fixture-object"); } catch { refused = true; }
+    check(refused && mediaReads === beforeMedia, "Ambiguous binary ownership bypassed the namespace guard");
     setActiveGoogleAccount("graph-runtime-other-account"); const before = requests;
     try { await store.commits(); } catch { /* Account guard must stop before any request. */ }
     check(requests === before, "Foreign account accessed cached/provider state");

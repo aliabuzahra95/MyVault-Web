@@ -29,6 +29,7 @@ import { useGoogleDriveConnection, type GoogleDriveConnectionStatus } from "@/ho
 import { formatBytes, type DriveManifestPreview } from "@/lib/restore/driveManifestPreview";
 import type { MetadataRestoreBundle } from "@/lib/restore/metadataRestore";
 import { googleOAuthSetup } from "@/lib/googleDrive/oauthSetup";
+import { BACKUP_GRAPH_NAMESPACE } from "@/lib/restore/backupGraph";
 import { cn } from "@/lib/utils";
 
 function SummaryRow({
@@ -776,15 +777,28 @@ export default function RestorePage() {
         driveScope={driveConnection.driveScope}
       />
 
-      <ManifestPreviewPanel status={driveConnection.status} manifestPreview={driveConnection.manifestPreview} />
-
-      <MetadataRestorePanel
-        status={driveConnection.status}
-        manifestPreview={driveConnection.manifestPreview}
-        metadataRestore={driveConnection.metadataRestore}
-        isBusy={driveConnection.isBusy}
-        onRestore={() => void driveConnection.restoreMetadata()}
-      />
+      {driveConnection.scan?.rootFolder?.name === BACKUP_GRAPH_NAMESPACE ? (
+        <section className="border-t border-slate-200 py-6">
+          <h2 className="text-base font-bold text-slate-950">Google Drive backup</h2>
+          <p className="mt-2 text-sm text-slate-500">Backup available. Your earlier backup has been preserved.</p>
+          <button type="button" disabled={driveConnection.isBusy} onClick={() => void driveConnection.restoreMetadata()}
+            className="mt-4 inline-flex h-11 items-center gap-2 rounded-md bg-emerald-800 px-5 text-sm font-bold text-white disabled:opacity-50">
+            {driveConnection.isBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+            Restore from Drive
+          </button>
+        </section>
+      ) : (
+        <>
+          <ManifestPreviewPanel status={driveConnection.status} manifestPreview={driveConnection.manifestPreview} />
+          <MetadataRestorePanel
+            status={driveConnection.status}
+            manifestPreview={driveConnection.manifestPreview}
+            metadataRestore={driveConnection.metadataRestore}
+            isBusy={driveConnection.isBusy}
+            onRestore={() => void driveConnection.restoreMetadata()}
+          />
+        </>
+      )}
 
       <section className="rounded-lg border border-slate-200 bg-white p-6 shadow-[0_6px_20px_rgba(15,23,42,0.035)]">
         <div className="mb-5 flex items-center justify-between gap-4">

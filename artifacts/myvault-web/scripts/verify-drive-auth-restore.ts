@@ -318,6 +318,10 @@ assert.equal(
 );
 const accountSource = await readFile(`${projectRoot}/src/lib/sync/accountContext.ts`, "utf8");
 assert.equal(accountSource.includes("if (!hasUsableDriveSession()) return LOCAL_ACCOUNT_ID"), false, "Token expiry must not discard the remembered account namespace.");
+const connectionSource = await readFile(`${projectRoot}/src/hooks/useGoogleDriveConnection.ts`, "utf8");
+const scanCallback = connectionSource.slice(connectionSource.indexOf("const scanForMyVault"), connectionSource.indexOf("const prepareRestorePreview"));
+assert.ok(scanCallback.includes("readVerifiedDriveBackupPreview(session)"), "Check Drive must recognize the coordinated graph namespace, not just the legacy manifest.");
+assert.equal(scanCallback.includes("refreshLatestDriveMetadataSafely"), false, "Check Drive must remain a read-only preview, not apply a Restore.");
 const mockFetcherSource = await readFile(`${projectRoot}/src/mocks/mockFetcher.ts`, "utf8");
 assert.equal(
   mockFetcherSource.includes('path.replace(/\\?.*/, "") === "/api/google-drive-auth"'),

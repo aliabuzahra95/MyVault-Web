@@ -8,7 +8,7 @@ import { buildMetadataRestoreBundle, type MetadataRestoreBundle } from "./metada
 import { type DriveSyncManifest } from "./driveManifestPreview";
 import { captureWebGraphSnapshot, completeWebGraphOperation, loadStagedGraphObjects, loadWebGraphOperation,
   markGraphObjectVerified, pendingWebGraphOperations, stageWebGraphOperation,
-  type StagedGraphObject, type WebGraphOperation, type WebGraphPosition, type WebGraphSnapshot } from "./webGraphStore";
+  type StagedGraphObject, type WebGraphOperation, type WebGraphPosition, type WebGraphSnapshot, type WebGraphState } from "./webGraphStore";
 import { ANDROID_BODY_BLOCK_TYPES, buildSyncPreflight, type SyncPendingChanges } from "../sync/syncPreflight";
 import { canonicalJson } from "../sync/revision";
 import { getActiveAccountId, withAccountSyncLock } from "../sync/accountContext";
@@ -72,6 +72,21 @@ function bundleOf(files: Record<string, unknown>, binaries: BackupBinaryDescript
 function exactPosition(graph: BackupGraph, inventory: GraphObject[], position: WebGraphPosition) {
   requireSafe(canonicalJson(graph.commits.get(position.commit.commitId)) === canonicalJson(position.commit), "Local graph position is not in the verified graph.");
   requireSafe(inventory.some((o) => canonicalJson(o.objectRef) === canonicalJson(position.objectRef)), "Local immutable commit receipt differs.");
+}
+/** A successful publication materializes local state but is not a Restore event. */
+function materializedPosition(graph: BackupGraph, inventory: GraphObject[], state: WebGraphState | null): WebGraphPosition | null {
+  if (!state) return null;
+  requireSafe(state.trust === "VERIFIED", "Local graph proof was invalidated. Reconciliation is required.");
+  const path = graph.plan().commits;
+  const candidates = [state.published, state.applied].filter((v): v is WebGraphPosition => v !== null);
+  let selected: WebGraphPosition | null = null; let selectedIndex = -1;
+  for (const position of candidates) {
+    exactPosition(graph, inventory, position);
+    const index = path.findIndex((commit) => commit.commitId === position.commit.commitId);
+    requireSafe(index >= 0, "Local publication/Restore histories diverge. Reconciliation is required.");
+    if (index > selectedIndex) { selected = position; selectedIndex = index; }
+  }
+  return selected;
 }
 async function discovery(store: WebGraphTransport) {
   checkAccount(store); const inventory = await store.commits(); checkAccount(store);
@@ -149,7 +164,7 @@ export class InternalWebGraphWorkflow {
       const { graph, inventory } = await discovery(this.store);
       const snapshot = await captureWebGraphSnapshot(this.store.accountId, this.store.lineageId);
       requireSafe(snapshot.state?.trust === "VERIFIED", "Graph baseline trust was invalidated. Reconciliation is required.");
-      const parent = snapshot.state?.applied ?? snapshot.state?.published;
+      const parent = materializedPosition(graph, inventory, snapshot.state);
       requireSafe(parent, "A verified first graph backup/Restore is required.");
       exactPosition(graph, inventory, parent);
       requireSafe(graph.tips[0] === parent.commit.commitId, "A newer backup exists. Restore or reconcile before Backup.");
@@ -290,8 +305,7 @@ export class InternalWebGraphWorkflow {
       const { graph, inventory } = await discovery(this.store);
       let snapshot = await captureWebGraphSnapshot(this.store.accountId, this.store.lineageId);
       requireSafe(!snapshot.state || snapshot.state.trust === "VERIFIED", "Graph applied state was invalidated. Reconciliation is required.");
-      const applied = snapshot.state?.applied;
-      if (applied) exactPosition(graph, inventory, applied);
+      const applied = materializedPosition(graph, inventory, snapshot.state);
       const plan = graph.plan(applied?.commit.commitId ?? null);
       requireSafe(["ALREADY_CURRENT", "DESCENDANTS", "SINGLE_TIP"].includes(plan.status), `Restore blocked: ${plan.status}`);
       if (plan.status === "ALREADY_CURRENT") return { status: "ALREADY_CURRENT", commitId: applied!.commit.commitId, metrics: emptyMetrics() };
@@ -321,13 +335,14 @@ export class InternalWebGraphWorkflow {
           new BackupBinaryResolution(replacementBinaries).finish(checkpoint.files);
           nextBundle = bundleOf(checkpoint.files, replacementBinaries, checkpoint.cloudVersion, [], commit.checkpoint.checkpointId);
         } else {
-          requireSafe(snapshot.bundle && snapshot.state?.applied, "Missing applied checkpoint state.");
+          const parent = materializedPosition(graph, inventory, snapshot.state);
+          requireSafe(snapshot.bundle && parent, "Missing verified materialized checkpoint state.");
           const raw = await requiredBytes(this.store, commit.delta!);
           staged.push(await object(this.store, opId, commit.delta!.cloudFileId, "delta", raw));
           const delta = parseBackupDelta(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(raw)));
           requireSafe(delta.deltaId === commit.delta!.deltaId && delta.parentId === commit.delta!.parentId
             && delta.checkpointId === commit.checkpoint.checkpointId && (delta.version !== 2 || commit.requiredReaders.includes(BACKUP_BINARY_READER_CAPABILITY)), "Delta ancestry/capability mismatch.");
-          const rebuilt = applyDelta(snapshot.bundle, delta, snapshot.state.applied.commit);
+          const rebuilt = applyDelta(snapshot.bundle, delta, parent.commit);
           replacementBinaries = (delta.binaries ?? []).filter((b) => {
             const previous = snapshot.bundle!.fileEntries?.find((e) => e.backupEntry === `files/${b.attachmentId}`);
             return previous?.sha256 !== b.sha256 || previous.size !== b.size;
@@ -358,10 +373,9 @@ export class InternalWebGraphWorkflow {
   private async recoverRestore(op: WebGraphOperation) {
     checkAccount(this.store); requireSafe(op.lineageId === this.store.lineageId, "Foreign Restore lineage.");
     const { graph, inventory } = await discovery(this.store);
-    const original = op.originalState?.applied;
-    if (original) exactPosition(graph, inventory, original);
+    const original = materializedPosition(graph, inventory, op.originalState);
     const plan = graph.plan(original?.commit.commitId ?? null);
-    requireSafe(plan.descendants.some((c) => c.commitId === op.next.commit.commitId), "Frozen Restore commit is no longer in a safe linear plan.");
+    requireSafe(plan.descendants[0]?.commitId === op.next.commit.commitId, "Frozen Restore commit is not the next safe linear descendant.");
     exactPosition(graph, inventory, op.next);
     const objects = await loadStagedGraphObjects(this.store.accountId, op);
     for (const staged of objects) {

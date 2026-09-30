@@ -76,7 +76,10 @@ export async function runWebGraphRuntime() {
   tests.push("production gates disabled");
   const { store, workflow } = await newFixture();
   const rootState = await loadWebGraphState(store.accountId, store.lineageId);
-  check(rootState?.trust === "VERIFIED" && rootState.published && rootState.applied, "Verified root not durable");
+  check(rootState?.trust === "VERIFIED" && rootState.published && rootState.applied === null, "Verified root is not durable or fabricated a Restore event");
+  const ownRootCurrent = await workflow.restore();
+  check(ownRootCurrent.status === "ALREADY_CURRENT" && (await loadWebGraphState(store.accountId, store.lineageId))!.applied === null,
+    "Own publication replayed a checkpoint or fabricated Restore position"); tests.push("own publication is current without inventing Restore position");
   const before = store.creates.length; const empty = await workflow.publish();
   check(empty.status === "ALREADY_CURRENT" && empty.metrics.payloadRows === 0 && store.creates.length === before, "Zero-change path did work");
   const emptyCapture = await captureWebGraphSnapshot(store.accountId, store.lineageId);
@@ -103,7 +106,7 @@ export async function runWebGraphRuntime() {
   const graph = await BackupGraph.discover(await store.commits(), store.accountId, store.lineageId);
   const rebuilt = await reconstructBackupGraph(graph, async (id) => (await store.read(id))!);
   check(rebuilt.binaries?.find((b) => b.attachmentId === "pdf")?.size === 8192, "Replacement did not resolve");
-  check(store.data.get(rootState.applied.commit.checkpoint.cloudFileId), "Checkpoint destroyed"); tests.push("4096 to 8192 immutable replacement");
+  check(store.data.get(rootState.published.commit.checkpoint.cloudFileId), "Checkpoint destroyed"); tests.push("4096 to 8192 immutable replacement");
   await saveLocalCreatedAttachment(attachment("pdf", 8192, "Metadata only"));
   const meta = await workflow.publish(); check(meta.metrics.binariesCreated === 0, "Metadata-only uploaded binary"); tests.push("metadata-only binary reuse");
   await saveLocalCreatedAttachment(attachment("new-pdf", 1024)); await saveLocalAttachmentBlob("new-pdf", new Blob([new Uint8Array(1024).fill(65)]));
@@ -161,7 +164,7 @@ export async function runWebGraphRuntime() {
     check((await loadPendingLocalSyncOperations()).length === 1 && (await f.store.commits()).length === 1, "Corrupt staging acknowledged changes"); tests.push("corrupt durable staging fails closed");
   }
   {
-    const f = await newFixture(); const parent = (await loadWebGraphState(f.store.accountId, f.store.lineageId))!.applied!;
+    const f = await newFixture(); const parent = (await loadWebGraphState(f.store.accountId, f.store.lineageId))!.published!;
     const a = await f.store.append(parent, [{ file: "notes.json", key: ["n"], operation: "upsert", value: row("n", "Branch A") }]);
     const b = await f.store.append(parent, [{ file: "notes.json", key: ["n"], operation: "upsert", value: row("n", "Branch B") }]);
     const fork = await BackupGraph.discover(await f.store.commits(), f.store.accountId, f.store.lineageId);
@@ -169,7 +172,7 @@ export async function runWebGraphRuntime() {
     await rejects(() => f.workflow.publish(), "Fork allowed Backup"); await rejects(() => f.workflow.restore(), "Fork allowed Restore"); tests.push("immutable siblings survive; fork blocks both paths");
   }
   {
-    const f = await newFixture(); const parent = (await loadWebGraphState(f.store.accountId, f.store.lineageId))!.applied!;
+    const f = await newFixture(); const parent = (await loadWebGraphState(f.store.accountId, f.store.lineageId))!.published!;
     const b = await f.store.append(parent, [{ file: "notes.json", key: ["n"], operation: "upsert", value: row("n", "Restore B") }]);
     await f.store.append(b, [{ file: "notes.json", key: ["n"], operation: "upsert", value: row("n", "Restore C") }]);
     f.store.reads = []; const restored = await f.workflow.restore();
@@ -178,9 +181,16 @@ export async function runWebGraphRuntime() {
     const result = await f.workflow.restore(); check(result.status === "ALREADY_CURRENT", "Already-current Restore not fast"); tests.push("B C targeted Restore; no checkpoint replay or journal pollution");
     const currentState = (await loadWebGraphState(f.store.accountId, f.store.lineageId))!;
     check(currentState.published?.commit.commitId === parent.commit.commitId && currentState.applied?.commit.commitId !== parent.commit.commitId, "Published and applied state conflated"); tests.push("publication and applied positions remain independent");
+    const restoredPosition = currentState.applied;
+    await saveLocalCreatedNote(overlay("n", "Local after Restore")); await f.workflow.publish();
+    const afterBackup = (await loadWebGraphState(f.store.accountId, f.store.lineageId))!;
+    check(afterBackup.applied?.commit.commitId === restoredPosition?.commit.commitId && afterBackup.published?.commit.commitId !== restoredPosition?.commit.commitId,
+      "Publishing after Restore overwrote the restored position");
+    check((await f.workflow.restore()).status === "ALREADY_CURRENT", "Restore after local publication replayed old history");
+    tests.push("Restore then Backup retains independent positions and current fast path");
   }
   {
-    const f = await newFixture(); const parent = (await loadWebGraphState(f.store.accountId, f.store.lineageId))!.applied!;
+    const f = await newFixture(); const parent = (await loadWebGraphState(f.store.accountId, f.store.lineageId))!.published!;
     const [id] = await f.store.reserveIds(1); const bytes = new Uint8Array(8192).fill(82); f.store.data.set(id, { role: "binary", bytes });
     const replacement = { attachmentId: "pdf", cloudFileId: id, size: bytes.length, sha256: await backupBytesSha256(bytes) };
     const attachmentRow = { id: "pdf", fileName: "new.pdf", noteId: null, libraryFolderId: null, mimeType: "application/pdf", sizeBytes: 8192, createdAt: 50, fileEntry: "files/pdf" };
@@ -189,7 +199,7 @@ export async function runWebGraphRuntime() {
     let crashed = false;
     const restore = new InternalWebGraphWorkflow(f.store, async (phase) => { if (phase === "after-restore-stage" && !crashed) { crashed = true; throw new Error("Restore restart"); } });
     await rejects(() => restore.restore(), "Restore stage interruption not simulated");
-    check((await loadWebGraphState(f.store.accountId, f.store.lineageId))!.applied!.commit.commitId === parent.commit.commitId, "Restore advanced before applying bytes");
+    check((await loadWebGraphState(f.store.accountId, f.store.lineageId))!.applied === null, "Restore advanced before applying bytes");
     await new InternalWebGraphWorkflow(f.store).restore();
     check((await loadLocalAttachmentBlob("pdf"))?.size === 8192, "Replacement not durable");
     check((await loadWebGraphState(f.store.accountId, f.store.lineageId))!.applied!.commit.commitId === c.commit.commitId, "Restore recovery did not advance sequentially");
@@ -197,7 +207,7 @@ export async function runWebGraphRuntime() {
     tests.push("verified 8192 replacement and settings survive Restore restart");
   }
   {
-    const f = await newFixture(); const parent = (await loadWebGraphState(f.store.accountId, f.store.lineageId))!.applied!;
+    const f = await newFixture(); const parent = (await loadWebGraphState(f.store.accountId, f.store.lineageId))!.published!;
     const b = await f.store.append(parent, [{ file: "notes.json", key: ["n"], operation: "upsert", value: row("n", "B committed") }]);
     const c = await f.store.append(b, [{ file: "notes.json", key: ["n"], operation: "upsert", value: row("n", "C corrupt") }]);
     f.store.data.get(c.commit.delta!.cloudFileId)!.bytes = new Uint8Array([1, 2, 3]);
@@ -205,14 +215,14 @@ export async function runWebGraphRuntime() {
     check((await loadWebGraphState(f.store.accountId, f.store.lineageId))!.applied!.commit.commitId === b.commit.commitId, "B/C partial progress misreported"); tests.push("B succeeds, corrupt C fails, applied position stays B");
   }
   {
-    const f = await newFixture(); const parent = (await loadWebGraphState(f.store.accountId, f.store.lineageId))!.applied!;
+    const f = await newFixture(); const parent = (await loadWebGraphState(f.store.accountId, f.store.lineageId))!.published!;
     await f.store.append(parent, [{ file: "notes.json", key: ["n"], operation: "upsert", value: row("n", "Remote") }]);
     await saveLocalCreatedNote(overlay("n", "Local"));
     await rejects(() => f.workflow.restore(), "Restore overwrote local edit");
     check((await loadLocalCreatedNotes())[0].title === "Local", "Local edit erased"); tests.push("local pending edit blocks Restore");
   }
   {
-    const f = await newFixture(); const parent = (await loadWebGraphState(f.store.accountId, f.store.lineageId))!.applied!;
+    const f = await newFixture(); const parent = (await loadWebGraphState(f.store.accountId, f.store.lineageId))!.published!;
     await f.store.append(parent, [{ file: "notes.json", key: ["n"], operation: "upsert", value: row("n", "Remote") }]);
     const release = await acquireNoteEditorLease(f.store.accountId);
     try { await rejects(() => f.workflow.restore(), "Open editor allowed Restore completion"); }
@@ -244,17 +254,17 @@ export async function runWebGraphRuntime() {
     check((await loadPendingLocalSyncOperations()).length === 0, "Reading/caching a verified PDF dirtied backup"); tests.push("byte-only replacement tracked; verified PDF cache creates no dirty work");
   }
   {
-    const f = await newFixture(); const parent = (await loadWebGraphState(f.store.accountId, f.store.lineageId))!.applied!;
+    const f = await newFixture(); const parent = (await loadWebGraphState(f.store.accountId, f.store.lineageId))!.published!;
     const b = await f.store.append(parent, [{ file: "notes.json", key: ["n"], operation: "upsert", value: row("n", "Incoming B") }]);
     let interrupted = false;
     const restoring = new InternalWebGraphWorkflow(f.store, async (phase) => { if (phase === "after-restore-stage" && !interrupted) { interrupted = true; throw new Error("Fork arrives after staging"); } });
     await rejects(() => restoring.restore(), "Restore stage boundary missing");
     await f.store.append(parent, [{ file: "notes.json", key: ["n"], operation: "upsert", value: row("n", "Sibling") }]);
     await rejects(() => f.workflow.restore(), "Recovery silently selected a newly forked branch");
-    check((await loadWebGraphState(f.store.accountId, f.store.lineageId))!.applied!.commit.commitId === parent.commit.commitId, "Forked Restore advanced"); tests.push("fork arriving during Restore recovery blocks advancement");
+    check((await loadWebGraphState(f.store.accountId, f.store.lineageId))!.applied === null, "Forked Restore advanced"); tests.push("fork arriving during Restore recovery blocks advancement");
   }
   {
-    const f = await newFixture(); const parent = (await loadWebGraphState(f.store.accountId, f.store.lineageId))!.applied!;
+    const f = await newFixture(); const parent = (await loadWebGraphState(f.store.accountId, f.store.lineageId))!.published!;
     await f.store.append(parent, [{ file: "notes.json", key: ["n"], operation: "upsert", value: row("n", "New parent") }]);
     await f.workflow.restore(); await saveLocalCreatedNote(overlay("n", "Edit after Restore", 400));
     await f.workflow.publish(); tests.push("Backup extends restored position, not stale publication binding");
