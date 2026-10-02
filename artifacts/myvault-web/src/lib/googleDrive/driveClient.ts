@@ -131,17 +131,24 @@ async function listDriveFiles(accessToken: string, query: string, pageSize = 10)
   return files;
 }
 
-export function listNamedDriveFolders(accessToken: string, name: string, parentId = "root") {
-  return listDriveFiles(accessToken, `name = '${escapeDriveQueryValue(name)}' and mimeType = '${DRIVE_FOLDER_MIME_TYPE}' and '${escapeDriveQueryValue(parentId)}' in parents and trashed = false`, 1000);
-}
-
-async function findFolder(accessToken: string, name: string, parentId: string) {
+export function listNamedDriveFolders(accessToken: string, name: string, parentId?: string) {
   const safeName = escapeDriveQueryValue(name);
-  const safeParentId = escapeDriveQueryValue(parentId);
   const query = [
     `name = '${safeName}'`,
     `mimeType = '${DRIVE_FOLDER_MIME_TYPE}'`,
-    `'${safeParentId}' in parents`,
+    ...(parentId ? [`'${escapeDriveQueryValue(parentId)}' in parents`] : []),
+    "trashed = false",
+  ].join(" and ");
+
+  return listDriveFiles(accessToken, query, 1000);
+}
+
+async function findFolder(accessToken: string, name: string, parentId?: string) {
+  const safeName = escapeDriveQueryValue(name);
+  const query = [
+    `name = '${safeName}'`,
+    `mimeType = '${DRIVE_FOLDER_MIME_TYPE}'`,
+    ...(parentId ? [`'${escapeDriveQueryValue(parentId)}' in parents`] : []),
     "trashed = false",
   ].join(" and ");
 
@@ -149,13 +156,12 @@ async function findFolder(accessToken: string, name: string, parentId: string) {
   return files[0] ?? null;
 }
 
-export async function findDriveFile(accessToken: string, name: string, parentId: string) {
+export async function findDriveFile(accessToken: string, name: string, parentId?: string) {
   const safeName = escapeDriveQueryValue(name);
-  const safeParentId = escapeDriveQueryValue(parentId);
   const query = [
     `name = '${safeName}'`,
     `mimeType != '${DRIVE_FOLDER_MIME_TYPE}'`,
-    `'${safeParentId}' in parents`,
+    ...(parentId ? [`'${escapeDriveQueryValue(parentId)}' in parents`] : []),
     "trashed = false",
   ].join(" and ");
 
@@ -203,7 +209,7 @@ function getMissingPaths(scan: Omit<MyVaultDriveScan, "ready" | "missingPaths">)
 }
 
 export async function findMyVaultDriveMap(accessToken: string): Promise<MyVaultDriveScan> {
-  const rootFolder = await findFolder(accessToken, driveRootFolder, "root");
+  const rootFolder = await findFolder(accessToken, driveRootFolder);
   const emptyFolders: Record<MyVaultDriveFolderKey, DriveFileRecord | null> = {
     metadata: null,
     files: null,

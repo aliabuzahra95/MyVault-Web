@@ -334,7 +334,7 @@ export class InternalWebGraphWorkflow {
       if (plan.status === "ALREADY_CURRENT") return { status: "ALREADY_CURRENT", commitId: applied!.commit.commitId, metrics: emptyMetrics() };
       requireSafe(!snapshot.operations.length && !snapshot.overlays.length, "Local changes need attention before Restore.");
       snapshot = await captureWebGraphSnapshot(this.store.accountId, this.store.lineageId, true);
-      requireSafe(snapshot.state || !snapshot.bundle, "Existing local Vault requires reconciliation before a first graph Restore.");
+      requireSafe(snapshot.state || !snapshot.bundle || plan.descendants[0]?.kind === "checkpoint", "Existing local Vault requires reconciliation before a first graph Restore.");
       for (const commit of plan.descendants) {
         checkAccount(this.store);
         requireSafe(!snapshot.operations.length && !snapshot.overlays.length, "A newer local edit blocks Restore.");

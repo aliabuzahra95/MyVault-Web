@@ -24,6 +24,7 @@ import {
 import { useGoogleDriveConnection } from "@/hooks/useGoogleDriveConnection";
 import { useGoogleDriveProfile } from "@/hooks/useGoogleDriveProfile";
 import { useRestoredCorpus } from "@/hooks/useRestoredCorpus";
+import { BACKUP_GRAPH_NAMESPACE } from "@/lib/restore/backupGraph";
 import { formatBytes } from "@/lib/restore/driveManifestPreview";
 import { clearRecentActivity } from "@/lib/recentActivity";
 
@@ -56,8 +57,9 @@ export function GoogleDrivePanel() {
 
   const hasToken = Boolean(drive.token && drive.accountId);
   const preview = drive.manifestPreview;
-  const hasNoBackup = drive.status === "no-backup" || Boolean(drive.scan && !drive.scan.manifestFile);
-  const hasIncompleteBackup = Boolean(drive.scan?.manifestFile && !drive.scan.ready);
+  const isGraphBackup = Boolean(drive.scan?.rootFolder?.name === BACKUP_GRAPH_NAMESPACE);
+  const hasNoBackup = !isGraphBackup && (drive.status === "no-backup" || Boolean(drive.scan && !drive.scan.manifestFile));
+  const hasIncompleteBackup = !isGraphBackup && Boolean(drive.scan?.manifestFile && !drive.scan.ready);
   const restoredMatchesPreview = Boolean(
     preview && drive.metadataRestore?.cloudVersion === preview.manifest.cloudVersion,
   );
@@ -217,6 +219,87 @@ export function GoogleDrivePanel() {
                   ) : (
                     <Button type="button" size="sm" onClick={() => setShowRestoreConfirmation(true)} disabled={drive.isBusy || !canConfirmRestore}>
                       {drive.isBusy ? <Loader2 className="animate-spin" /> : <RotateCcw />} Restore now
+                    </Button>
+                  )}
+                </div>
+              </>
+            ) : isGraphBackup ? (
+              <>
+                <div className="grid gap-4 sm:grid-cols-3">
+                  <div className="flex items-start gap-2.5">
+                    <Clock3 className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+                    <div>
+                      <p className="text-xs text-muted-foreground">Backup type</p>
+                      <p className="mt-1 text-sm font-medium text-foreground">Android Backup Graph</p>
+                    </div>
+                  </div>
+                  <div className="flex items-start gap-2.5">
+                    <HardDrive className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+                    <div>
+                      <p className="text-xs text-muted-foreground">Status</p>
+                      <p className="mt-1 text-sm font-medium text-foreground">{drive.metadataRestore ? "Verified baseline" : "Ready to restore"}</p>
+                    </div>
+                  </div>
+                  <div className="flex items-start gap-2.5">
+                    <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+                    <div>
+                      <p className="text-xs text-muted-foreground">Namespace</p>
+                      <p className="mt-1 text-sm font-medium text-foreground">Google Drive</p>
+                    </div>
+                  </div>
+                </div>
+
+                {restoredCounts ? (
+                  <div className="mt-5 grid grid-cols-2 gap-3 rounded-md bg-muted/55 p-4 sm:grid-cols-4">
+                    {[
+                      ["Courses", restoredCounts.courses],
+                      ["Library files", restoredCounts.attachments],
+                      ["Study notes", restoredCounts.notes],
+                      ["Sticky notes", restoredCounts.stickyNotes],
+                    ].map(([label, value]) => (
+                      <div key={label}>
+                        <p className="text-lg font-semibold text-foreground">{value}</p>
+                        <p className="text-xs text-muted-foreground">{label}</p>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+
+                <div className="mt-5 flex flex-wrap items-center gap-2">
+                  {drive.metadataRestore ? (
+                    <>
+                      <span className="inline-flex items-center gap-1.5 text-sm font-medium text-primary">
+                        <CheckCircle2 className="h-4 w-4" /> Restore complete
+                      </span>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => void drive.restoreMetadata()}
+                        disabled={drive.isBusy}
+                      >
+                        {drive.isBusy ? <Loader2 className="animate-spin" /> : <RefreshCw />} Check for newer backup
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setShowRestoreConfirmation(true)}
+                        disabled={drive.isBusy || !canConfirmRestore}
+                      >
+                        <RotateCcw /> Restore again
+                      </Button>
+                    </>
+                  ) : (
+                    <Button
+                      type="button"
+                      size="sm"
+                      onClick={() => setShowRestoreConfirmation(true)}
+                      disabled={drive.isBusy || !canConfirmRestore}
+                      data-testid="restore-from-google-drive"
+                    >
+                      {drive.isBusy ? <Loader2 className="animate-spin" /> : <RotateCcw />}
+                      {drive.isBusy ? "Restoring" : "Restore from Drive"}
                     </Button>
                   )}
                 </div>
