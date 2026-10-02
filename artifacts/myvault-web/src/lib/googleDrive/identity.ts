@@ -1,8 +1,13 @@
 import { createSingleFlight } from "@/lib/googleDrive/singleFlight";
 
-export const GOOGLE_DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file";
+export const GOOGLE_DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly";
 export const GOOGLE_CLIENT_ID = import.meta.env?.VITE_GOOGLE_CLIENT_ID?.trim() ?? "";
 export const GOOGLE_IDENTITY_SCRIPT_SRC = "https://accounts.google.com/gsi/client";
+
+export function hasSufficientDriveScope(scope?: string | null): boolean {
+  if (!scope) return false;
+  return scope.includes("drive.readonly") || scope.includes("https://www.googleapis.com/auth/drive");
+}
 
 export type GoogleDriveToken = {
   accessToken: string;
@@ -237,7 +242,15 @@ async function restoreServerSession() {
   } catch (error) {
     throw authErrorFrom(error, "Google Drive session could not be restored.");
   }
-  return rememberGoogleDriveToken(await parseServerSession(response));
+  const session = await parseServerSession(response);
+  if (!hasSufficientDriveScope(session.scope)) {
+    clearCachedGoogleDriveToken({ broadcast: true });
+    throw new GoogleDriveAuthError(
+      "Google Drive permissions need to be updated to restore Android backups. Please connect again.",
+      "interaction-required",
+    );
+  }
+  return rememberGoogleDriveToken(session);
 }
 
 async function requestAuthorizationCode(selectAccount: boolean) {

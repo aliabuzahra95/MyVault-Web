@@ -153,7 +153,7 @@ export function useGoogleDriveConnection() {
             assertGoogleDriveSession(verifiedToken, accountId);
             if (cancelled || currentRefreshId !== refreshId) return;
             setState({
-              status: refreshed.staged ? "connected" : refreshed.manifestPreview || refreshed.graphBackup ? "metadata-restored" : refreshed.scan.manifestFile ? "connected" : "no-backup",
+              status: refreshed.staged ? "connected" : (refreshed.manifestPreview || (refreshed.graphBackup && refreshed.metadataRestore)) ? "metadata-restored" : refreshed.graphBackup ? "preview-ready" : refreshed.scan.manifestFile ? "connected" : "no-backup",
               token: verifiedToken,
               accountId,
               scan: refreshed.scan,
@@ -252,7 +252,7 @@ export function useGoogleDriveConnection() {
       const { accountId } = await verifyAndActivateGoogleDriveSession(token);
       const refreshed = await refreshLatestDriveMetadataSafely(token, accountId);
       setState({
-        status: refreshed.staged ? "connected" : refreshed.manifestPreview || refreshed.graphBackup ? "metadata-restored" : refreshed.scan.manifestFile ? "connected" : "no-backup",
+        status: refreshed.staged ? "connected" : (refreshed.manifestPreview || (refreshed.graphBackup && refreshed.metadataRestore)) ? "metadata-restored" : refreshed.graphBackup ? "preview-ready" : refreshed.scan.manifestFile ? "connected" : "no-backup",
         token,
         accountId,
         scan: refreshed.scan,

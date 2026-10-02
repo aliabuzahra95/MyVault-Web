@@ -313,6 +313,7 @@ function DriveConnectionPanel({
   driveScope: string;
 }) {
   const badge = getConnectionBadge(status);
+  const isGraphBackup = scan?.rootFolder?.name === BACKUP_GRAPH_NAMESPACE;
   const rootFound = scan?.rootFolder !== undefined ? scan.rootFolder !== null : false;
   const manifestFound = scan?.manifestFile !== undefined ? scan.manifestFile !== null : false;
 
@@ -393,21 +394,21 @@ function DriveConnectionPanel({
         />
         <DriveScanRow
           icon={Folder}
-          label="MyVault folder"
-          value={rootFound ? "MyVault found" : scan ? "MyVault missing" : "Not scanned yet"}
-          detail={rootFound ? "The website can see the root Drive folder." : "This will look for the Android MyVault folder."}
+          label={isGraphBackup ? "Graph root" : "MyVault folder"}
+          value={rootFound ? (isGraphBackup ? "Backup Graph found" : "MyVault found") : scan ? "Folder missing" : "Not scanned yet"}
+          detail={rootFound ? (isGraphBackup ? "The website can see MyVault Backup Graph v1." : "The website can see the root Drive folder.") : "This will look for the Android backup folder."}
           state={status === "scanning" ? "active" : rootFound ? "found" : scan ? "missing" : "waiting"}
         />
         <DriveScanRow
           icon={Database}
-          label="Sync manifest"
-          value={manifestFound ? driveManifest.fileName : scan ? "Manifest missing" : "Not scanned yet"}
-          detail={manifestFound ? `Modified ${formatDriveDate(scan?.manifestFile?.modifiedTime)}` : "This file tells the website what to restore."}
-          state={status === "scanning" ? "active" : manifestFound ? "found" : scan ? "missing" : "waiting"}
+          label={isGraphBackup ? "Graph structure" : "Sync manifest"}
+          value={isGraphBackup ? "Backup Graph v1" : manifestFound ? driveManifest.fileName : scan ? "Manifest missing" : "Not scanned yet"}
+          detail={isGraphBackup ? "Android incremental graph commits verified." : manifestFound ? `Modified ${formatDriveDate(scan?.manifestFile?.modifiedTime)}` : "This file tells the website what to restore."}
+          state={status === "scanning" ? "active" : (isGraphBackup || manifestFound) ? "found" : scan ? "missing" : "waiting"}
         />
       </div>
 
-      {scan?.missingPaths.length ? (
+      {scan?.missingPaths.length && !isGraphBackup ? (
         <div className="mt-4 rounded-md border border-slate-200 bg-white px-4 py-3">
           <div className="flex items-start gap-3">
             <XCircle className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" />

@@ -5,5 +5,5 @@ export const googleOAuthSetup = {
   clientIdEnvFile: "/Users/aliah/Desktop/MyVault-Web/artifacts/myvault-web/.env.local",
   clientIdEnvName: "VITE_GOOGLE_CLIENT_ID",
   driveApiName: "Google Drive API",
-  driveScope: "https://www.googleapis.com/auth/drive.file",
+  driveScope: "https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly",
 } as const;

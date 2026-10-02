@@ -188,7 +188,7 @@ function publicSession(token: GoogleTokenExchange, accountId: string): PublicSes
     accessToken: token.access_token!,
     accountId,
     expiresAt: Date.now() + (token.expires_in ?? 3600) * 1000,
-    scope: token.scope || "https://www.googleapis.com/auth/drive.file",
+    scope: token.scope || "https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly",
   };
 }
 
