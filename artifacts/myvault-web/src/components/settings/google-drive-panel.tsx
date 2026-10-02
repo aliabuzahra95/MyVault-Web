@@ -173,6 +173,21 @@ export function GoogleDrivePanel() {
           </p>
         ) : null}
 
+        {drive.latestBackup && drive.latestBackup.status === "NEWER" && drive.metadataRestore ? (
+          <div className="mt-4 flex flex-col gap-2 rounded-md border border-emerald-500/20 bg-emerald-500/10 p-3 text-sm text-foreground sm:flex-row sm:items-center sm:justify-between">
+            <span>{drive.latestBackup.message}</span>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => setShowRestoreConfirmation(true)}
+              disabled={drive.isBusy}
+            >
+              Restore latest
+            </Button>
+          </div>
+        ) : null}
+
         {hasToken ? (
           <div className="mt-5 border-t border-border/45 pt-5">
             {preview ? (

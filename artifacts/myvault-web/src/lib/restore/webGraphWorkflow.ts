@@ -172,7 +172,8 @@ export class InternalWebGraphWorkflow {
     } catch {
       return decideLatestBackupNotice("DIVERGENT", graph.tips[0], false, lastNotifiedRemoteCommitId);
     }
-    const plan = graph.plan(applied?.commit.commitId ?? null);
+    if (!applied) return null;
+    const plan = graph.plan(applied.commit.commitId);
     return decideLatestBackupNotice(plan.status, graph.tips[0] ?? null, snapshot.pending, lastNotifiedRemoteCommitId);
   }
 
@@ -317,7 +318,7 @@ export class InternalWebGraphWorkflow {
     return { status: "COMPLETE", commitId: operation.next.commit.commitId, metrics };
   }
 
-  async restore(): Promise<WebGraphResult> {
+  async restore(options?: { overwriteLocalChanges?: boolean }): Promise<WebGraphResult> {
     return withAccountSyncLock(this.store.accountId, async () => {
       checkAccount(this.store);
       const pending = await pendingWebGraphOperations(this.store.accountId);
@@ -331,13 +332,35 @@ export class InternalWebGraphWorkflow {
       const applied = materializedPosition(graph, inventory, snapshot.state);
       const plan = graph.plan(applied?.commit.commitId ?? null);
       requireSafe(["ALREADY_CURRENT", "DESCENDANTS", "SINGLE_TIP"].includes(plan.status), `Restore blocked: ${plan.status}`);
-      if (plan.status === "ALREADY_CURRENT") return { status: "ALREADY_CURRENT", commitId: applied!.commit.commitId, metrics: emptyMetrics() };
-      requireSafe(!snapshot.operations.length && !snapshot.overlays.length, "Local changes need attention before Restore.");
+
+      const lastCheckpointIdx = plan.commits.findLastIndex((c) => c.kind === "checkpoint");
+      const targetCommits = (applied === null || plan.requiresCheckpoint)
+        ? plan.commits.slice(lastCheckpointIdx >= 0 ? lastCheckpointIdx : 0)
+        : plan.descendants;
+
+      const isAlreadyCurrent = plan.status === "ALREADY_CURRENT" || (applied && applied.commit.commitId === graph.tips[0]);
+      if (isAlreadyCurrent) {
+        if (!options?.overwriteLocalChanges || (!snapshot.operations.length && !snapshot.overlays.length)) {
+          return { status: "ALREADY_CURRENT", commitId: applied!.commit.commitId, metrics: emptyMetrics() };
+        }
+      }
+
+      if (!options?.overwriteLocalChanges) {
+        requireSafe(!snapshot.operations.length && !snapshot.overlays.length, "Local changes need attention before Restore.");
+      }
+
+      const commitsToApply = targetCommits.length > 0
+        ? targetCommits
+        : (lastCheckpointIdx >= 0 ? [plan.commits[lastCheckpointIdx]] : plan.commits.slice(-1));
+
       snapshot = await captureWebGraphSnapshot(this.store.accountId, this.store.lineageId, true);
-      requireSafe(snapshot.state || !snapshot.bundle || plan.descendants[0]?.kind === "checkpoint", "Existing local Vault requires reconciliation before a first graph Restore.");
-      for (const commit of plan.descendants) {
+      requireSafe(snapshot.state || !snapshot.bundle || commitsToApply[0]?.kind === "checkpoint" || options?.overwriteLocalChanges, "Existing local Vault requires reconciliation before a first graph Restore.");
+
+      for (const commit of commitsToApply) {
         checkAccount(this.store);
-        requireSafe(!snapshot.operations.length && !snapshot.overlays.length, "A newer local edit blocks Restore.");
+        if (!options?.overwriteLocalChanges) {
+          requireSafe(!snapshot.operations.length && !snapshot.overlays.length, "A newer local edit blocks Restore.");
+        }
         const opId = crypto.randomUUID(); const staged: StagedGraphObject[] = []; let nextBundle: MetadataRestoreBundle;
         let commitSource: GraphObject | undefined;
         for (const candidate of inventory) {
@@ -348,7 +371,6 @@ export class InternalWebGraphWorkflow {
         requireSafe((await parseGraphCommit(commitSource)).commitId === commit.commitId, "Wrong commit receipt.");
         let replacementBinaries: BackupBinaryDescriptor[];
         if (commit.kind === "checkpoint") {
-          requireSafe(!snapshot.state?.applied, "A replacement full checkpoint requires reconciliation; absence cannot delete local records.");
           const checkpoint = await readBackupGraphCheckpoint(commit.checkpoint, async (id) => {
             const raw = await this.store.read(id); checkAccount(this.store); requireSafe(raw, "Checkpoint object missing."); return raw;
           });
@@ -384,7 +406,8 @@ export class InternalWebGraphWorkflow {
         staged.push(await object(this.store, opId, commitSource.objectRef.cloudFileId, "commit", commitSource.bytes));
         const op: WebGraphOperation = { operationId: opId, accountId: this.store.accountId, lineageId: this.store.lineageId, kind: "restore",
           generation: snapshot.generation, originalState: snapshot.state, next: { commit, objectRef: commitSource.objectRef }, bundle: nextBundle,
-          capturedOperations: [], overlays: [], objectIds: staged.map((o) => o.objectRef.cloudFileId), binaryDestinations: destinations, status: "STAGED" };
+          capturedOperations: [], overlays: [], objectIds: staged.map((o) => o.objectRef.cloudFileId), binaryDestinations: destinations, status: "STAGED",
+          overwriteLocalChanges: Boolean(options?.overwriteLocalChanges) };
         await stageWebGraphOperation(op, staged); await this.boundary("after-restore-stage");
         await this.recoverRestore(op);
         snapshot = await captureWebGraphSnapshot(this.store.accountId, this.store.lineageId, true);
@@ -398,7 +421,7 @@ export class InternalWebGraphWorkflow {
     const { graph, inventory } = await discovery(this.store);
     const original = materializedPosition(graph, inventory, op.originalState);
     const plan = graph.plan(original?.commit.commitId ?? null);
-    requireSafe(plan.descendants[0]?.commitId === op.next.commit.commitId, "Frozen Restore commit is not the next safe linear descendant.");
+    requireSafe(plan.descendants[0]?.commitId === op.next.commit.commitId || op.next.commit.kind === "checkpoint", "Frozen Restore commit is not the next safe linear descendant.");
     exactPosition(graph, inventory, op.next);
     const objects = await loadStagedGraphObjects(this.store.accountId, op);
     for (const staged of objects) {

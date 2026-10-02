@@ -36,6 +36,7 @@ export type WebGraphOperation = {
   bundle: MetadataRestoreBundle; capturedOperations: LocalSyncOperation[]; overlays: GraphOverlay[];
   objectIds: string[]; binaryDestinations: Record<string, string>;
   status: "STAGED" | "COMPLETE";
+  overwriteLocalChanges?: boolean;
 };
 function current(accountId: string) {
   if (getActiveAccountId() !== accountId) throw new Error("The Google account changed. Local data was preserved.");
@@ -208,13 +209,28 @@ export async function completeWebGraphOperation(accountId: string, operationId: 
       const gen = tx.objectStore(META).get(accountStorageKey("vault-generation", accountId));
       const journal = tx.objectStore(JOURNAL).getAll(accountStorageRange(accountId));
       const counts = graphOverlayStores.map((s) => tx.objectStore(s).count(accountStorageRange(accountId)));
+      const overlayKeyRequests = graphOverlayStores.map((s) => tx.objectStore(s).getAllKeys(accountStorageRange(accountId)));
       const objects = op.objectIds.map((id) => tx.objectStore(OBJECTS).get([accountId, operationId, id]));
       const overlays = op.overlays.map((v) => tx.objectStore(v.store).get(v.key));
-      reads([state, gen, journal, ...counts, ...objects, ...overlays], () => safely(tx, () => {
+      reads([state, gen, journal, ...counts, ...overlayKeyRequests, ...objects, ...overlays], () => safely(tx, () => {
         current(accountId);
         if (!matches(state.result ?? null, op.originalState) || objects.some((r) => !r.result?.verified)) throw new Error("Completion proof changed or verification is incomplete.");
-        if (op.kind === "restore" && ((gen.result ?? 0) !== op.generation
-          || journal.result.some((r: LocalSyncOperation) => r.status === "pending") || counts.some((r) => r.result > 0))) throw new Error("Local edits need attention before Restore.");
+        if (op.kind === "restore") {
+          if (!op.overwriteLocalChanges && ((gen.result ?? 0) !== op.generation
+            || journal.result.some((r: LocalSyncOperation) => r.status === "pending") || counts.some((r) => r.result > 0))) {
+            throw new Error("Local edits need attention before Restore.");
+          }
+          if (op.overwriteLocalChanges) {
+            for (const entry of (journal.result ?? []) as LocalSyncOperation[]) {
+              tx.objectStore(JOURNAL).delete(accountStorageKey(entry.id, accountId));
+            }
+            graphOverlayStores.forEach((name, index) => {
+              const store = tx.objectStore(name);
+              const keys: IDBValidKey[] = overlayKeyRequests[index].result ?? [];
+              keys.forEach((k) => store.delete(k));
+            });
+          }
+        }
         for (const [attachmentId, objectId] of Object.entries(op.kind === "restore" ? op.binaryDestinations : {})) {
           const binary: StagedGraphObject | undefined = objects.map((r) => r.result).find((o) => o.objectRef.cloudFileId === objectId);
           if (!binary || binary.role !== "binary") throw new Error("Missing verified replacement bytes.");

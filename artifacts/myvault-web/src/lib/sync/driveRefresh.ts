@@ -65,7 +65,7 @@ export function refreshLatestDriveMetadataSafely(token: GoogleDriveToken, accoun
         let latestBackup: WebLatestBackupNotice | null = null;
         if (manualRestore) {
           update(accountId, { phase: "applying", error: null });
-          await new InternalWebGraphWorkflow(graph).restore();
+          await new InternalWebGraphWorkflow(graph).restore({ overwriteLocalChanges: true });
         } else {
           latestBackup = await new InternalWebGraphWorkflow(graph).latestBackupNotice(
             loadLastNotifiedGraphTip(accountId, graph.lineageId),
@@ -77,7 +77,7 @@ export function refreshLatestDriveMetadataSafely(token: GoogleDriveToken, accoun
         const current = manualRestore || latestBackup === null;
         const phase = current ? "current" : latestBackup?.status === "BLOCKED" ? "error" : "staged";
         update(accountId, { phase, checkedAt: Date.now(),
-          ...(manualRestore ? { appliedAt: Date.now(), error: null } : { error: latestBackup?.message ?? null }) });
+          ...(manualRestore ? { appliedAt: Date.now(), error: null } : { error: latestBackup?.status === "BLOCKED" ? latestBackup.message : null }) });
         return { scan: graph.previewScan(),
           manifestPreview: null, metadataRestore, staged: !current, graphBackup: true, latestBackup };
       }
