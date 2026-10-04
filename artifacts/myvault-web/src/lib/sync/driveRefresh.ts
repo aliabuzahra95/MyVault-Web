@@ -42,7 +42,10 @@ export async function readVerifiedDriveBackupPreview(session: VerifiedGoogleDriv
   assertGoogleDriveSession(session.token, session.accountId);
   if (WEB_GRAPH_RESTORE_ENABLED) {
     const graph = await GoogleDriveWebGraphTransport.open(session);
-    if (graph) return { scan: graph.previewScan(), manifestPreview: null, error: null, graphBackup: true };
+    if (graph) {
+      const status = await new InternalWebGraphWorkflow(graph).backupStatus();
+      return { scan: graph.previewScan(status), manifestPreview: null, error: status.notice?.status === "BLOCKED" ? status.notice.message : null, graphBackup: true };
+    }
   }
   return { ...await readDriveManifestPreview(session.token.accessToken), graphBackup: false };
 }
@@ -63,22 +66,24 @@ export function refreshLatestDriveMetadataSafely(token: GoogleDriveToken, accoun
       if (graph) {
         // Graph backups remain strictly manual. Focus/load checks must not apply them.
         let latestBackup: WebLatestBackupNotice | null = null;
+        const workflow = new InternalWebGraphWorkflow(graph);
         if (manualRestore) {
           update(accountId, { phase: "applying", error: null });
-          await new InternalWebGraphWorkflow(graph).restore({ overwriteLocalChanges: true });
-        } else {
-          latestBackup = await new InternalWebGraphWorkflow(graph).latestBackupNotice(
-            loadLastNotifiedGraphTip(accountId, graph.lineageId),
-          );
+          await workflow.restore({ overwriteLocalChanges: true });
+        }
+        const verifiedStatus = await workflow.backupStatus(loadLastNotifiedGraphTip(accountId, graph.lineageId));
+        if (manualRestore && !verifiedStatus.current) throw new Error("The latest Drive commit has not been applied. Restore is not complete; check again.");
+        if (!manualRestore) {
+          latestBackup = verifiedStatus.notice;
           if (latestBackup?.remoteCommitId) markGraphTipNotified(accountId, graph.lineageId, latestBackup.remoteCommitId);
         }
         const metadataRestore = await loadMetadataRestoreBundle();
         assertGoogleDriveSession(token, accountId);
-        const current = manualRestore || latestBackup === null;
+        const current = verifiedStatus.current;
         const phase = current ? "current" : latestBackup?.status === "BLOCKED" ? "error" : "staged";
         update(accountId, { phase, checkedAt: Date.now(),
           ...(manualRestore ? { appliedAt: Date.now(), error: null } : { error: latestBackup?.status === "BLOCKED" ? latestBackup.message : null }) });
-        return { scan: graph.previewScan(),
+        return { scan: graph.previewScan(verifiedStatus),
           manifestPreview: null, metadataRestore, staged: !current, graphBackup: true, latestBackup };
       }
     }

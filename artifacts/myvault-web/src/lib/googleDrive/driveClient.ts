@@ -34,6 +34,7 @@ type DriveListResponse = {
 export type MyVaultDriveFolderKey = "metadata" | "files" | "manifests" | "backups";
 
 export type MyVaultDriveScan = {
+  verifiedGraph?: { commitId: string | null; modifiedTime: string | null; current: boolean };
   scannedAt: string;
   rootFolder: DriveFileRecord | null;
   folders: Record<MyVaultDriveFolderKey, DriveFileRecord | null>;

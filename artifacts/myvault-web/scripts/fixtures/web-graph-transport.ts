@@ -1,5 +1,5 @@
 import { GoogleDriveWebGraphTransport } from "../../src/lib/googleDrive/graphTransport";
-import { rememberGoogleDriveToken, clearCachedGoogleDriveToken } from "../../src/lib/googleDrive/identity";
+import { rememberGoogleDriveToken, clearCachedGoogleDriveToken, getCachedGoogleDriveToken } from "../../src/lib/googleDrive/identity";
 import { setActiveGoogleAccount } from "../../src/lib/sync/accountContext";
 import { backupBytesSha256 } from "../../src/lib/restore/incrementalBackup";
 
@@ -7,8 +7,11 @@ export async function verifyGraphTransportContracts() {
   const originalFetch = globalThis.fetch;
   const previousAccount = "graph-runtime-transport";
   setActiveGoogleAccount(previousAccount);
-  const token = rememberGoogleDriveToken({ accessToken: "disposable-fixture-not-a-credential", expiresAt: Date.now() + 900000,
+  rememberGoogleDriveToken({ accessToken: "old-disposable-limited-grant", expiresAt: Date.now() + 900000,
     scope: "https://www.googleapis.com/auth/drive.file" });
+  if (getCachedGoogleDriveToken() !== null) throw new Error("A limited old login bypassed renewed Drive visibility approval");
+  const token = rememberGoogleDriveToken({ accessToken: "disposable-fixture-not-a-credential", expiresAt: Date.now() + 900000,
+    scope: "https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly" });
   const layout = { rootId: "fixture-root", lineageId: "fixture-lineage", checkpoints: "fixture-checkpoints", commits: "fixture-commits",
     deltas: "fixture-deltas", binaries: "fixture-binaries" };
   const store = new GoogleDriveWebGraphTransport({ accountId: previousAccount, token, profile: { permissionId: previousAccount } }, layout);
@@ -24,7 +27,7 @@ export async function verifyGraphTransportContracts() {
       if (url.searchParams.get("q")!.includes(layout.rootId)) return json({ files: ["checkpoints", "commits", "deltas", "binaries"].map((name) => ({
         id: layout[name as keyof typeof layout], name, mimeType: "application/vnd.google-apps.folder", parents: [layout.rootId] })) });
       return json({ files: removed ? [] : ["fixture-object", ...(sibling ? ["fixture-sibling"] : [])].map((id) => ({ id, name: id,
-        sha256Checksum: sha256, size: String(bytes.length), parents: [layout.commits] })) });
+        sha256Checksum: sha256, size: String(bytes.length), parents: [layout.commits], modifiedTime: "2026-10-04T01:00:00Z" })) });
     }
     if (url.searchParams.get("alt") === "media") { mediaReads++; return new Response(new Uint8Array(bytes)); }
     return json({ id: "fixture-object", parents: multipleParents ? [layout.commits, "not-enrolled"] : [outside ? "not-enrolled" : layout.commits] });
@@ -32,6 +35,8 @@ export async function verifyGraphTransportContracts() {
   const check = (condition: unknown, reason: string) => { if (!condition) throw new Error(reason); };
   try {
     await store.commits(); check(mediaReads === 1, "Initial commit was not verified");
+    check(store.previewScan({ current: true, remoteCommitId: "tip", commitObjectId: "fixture-object" }).verifiedGraph?.modifiedTime
+      === "2026-10-04T01:00:00Z", "Graph date did not come from the verified tip receipt");
     await store.commits(); check(mediaReads === 1, "Repeated current digest re-downloaded immutable history");
     sibling = true; await store.commits(); check(mediaReads === 2, "Fresh sibling was missed by cache");
     bytes = new TextEncoder().encode("changed immutable bytes"); sha256 = await backupBytesSha256(bytes);

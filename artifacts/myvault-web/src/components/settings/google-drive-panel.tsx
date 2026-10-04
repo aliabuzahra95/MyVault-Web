@@ -56,12 +56,13 @@ export function GoogleDrivePanel() {
   const [isDisconnecting, setIsDisconnecting] = useState(false);
 
   const hasToken = Boolean(drive.token && drive.accountId);
-  const preview = drive.manifestPreview;
   const isGraphBackup = Boolean(drive.scan?.rootFolder?.name === BACKUP_GRAPH_NAMESPACE);
+  const preview = isGraphBackup ? null : drive.manifestPreview;
+  const graphCurrent = Boolean(drive.scan?.verifiedGraph?.current && drive.metadataRestore && !drive.error);
   const hasNoBackup = !isGraphBackup && (drive.status === "no-backup" || Boolean(drive.scan && !drive.scan.manifestFile));
   const hasIncompleteBackup = !isGraphBackup && Boolean(drive.scan?.manifestFile && !drive.scan.ready);
   const restoredMatchesPreview = Boolean(
-    preview && drive.metadataRestore?.cloudVersion === preview.manifest.cloudVersion,
+    preview && !drive.error && drive.metadataRestore?.cloudVersion === preview.manifest.cloudVersion,
   );
   const backupModifiedAt = drive.scan?.manifestFile?.modifiedTime
     ?? (preview?.manifest.cloudVersion ? preview.manifest.cloudVersion : null);
@@ -244,15 +245,15 @@ export function GoogleDrivePanel() {
                   <div className="flex items-start gap-2.5">
                     <Clock3 className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
                     <div>
-                      <p className="text-xs text-muted-foreground">Backup type</p>
-                      <p className="mt-1 text-sm font-medium text-foreground">Android Backup Graph</p>
+                      <p className="text-xs text-muted-foreground">Last modified</p>
+                      <p className="mt-1 text-sm font-medium text-foreground">{formatBackupDate(drive.scan?.verifiedGraph?.modifiedTime)}</p>
                     </div>
                   </div>
                   <div className="flex items-start gap-2.5">
                     <HardDrive className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
                     <div>
                       <p className="text-xs text-muted-foreground">Status</p>
-                      <p className="mt-1 text-sm font-medium text-foreground">{drive.metadataRestore ? "Verified baseline" : "Ready to restore"}</p>
+                      <p className="mt-1 text-sm font-medium text-foreground">{graphCurrent ? "Up to date" : drive.error ? "Needs review" : "Restore available"}</p>
                     </div>
                   </div>
                   <div className="flex items-start gap-2.5">
@@ -281,7 +282,7 @@ export function GoogleDrivePanel() {
                 ) : null}
 
                 <div className="mt-5 flex flex-wrap items-center gap-2">
-                  {drive.metadataRestore ? (
+                  {graphCurrent ? (
                     <>
                       <span className="inline-flex items-center gap-1.5 text-sm font-medium text-primary">
                         <CheckCircle2 className="h-4 w-4" /> Restore complete
@@ -290,7 +291,7 @@ export function GoogleDrivePanel() {
                         type="button"
                         variant="outline"
                         size="sm"
-                        onClick={() => void drive.restoreMetadata()}
+                        onClick={() => void drive.prepareRestorePreview()}
                         disabled={drive.isBusy}
                       >
                         {drive.isBusy ? <Loader2 className="animate-spin" /> : <RefreshCw />} Check for newer backup
@@ -327,7 +328,7 @@ export function GoogleDrivePanel() {
                     This is a fresh Google account. You can use MyVault normally; website changes stay on this computer until this account has its first Drive backup.
                   </p>
                 </div>
-                <Button type="button" variant="outline" size="sm" onClick={() => void drive.restoreMetadata()} disabled={drive.isBusy}>
+                <Button type="button" variant="outline" size="sm" onClick={() => void drive.prepareRestorePreview()} disabled={drive.isBusy}>
                   {drive.isBusy ? <Loader2 className="animate-spin" /> : <RefreshCw />}
                   Check again
                 </Button>
@@ -338,7 +339,7 @@ export function GoogleDrivePanel() {
                   <p className="text-sm font-semibold text-foreground">Incomplete MyVault backup</p>
                   <p className="mt-1 max-w-xl text-xs leading-5 text-muted-foreground">Run a fresh Google Drive backup from MyVault Android, then check this account again.</p>
                 </div>
-                <Button type="button" variant="outline" size="sm" onClick={() => void drive.restoreMetadata()} disabled={drive.isBusy}>
+                <Button type="button" variant="outline" size="sm" onClick={() => void drive.prepareRestorePreview()} disabled={drive.isBusy}>
                   {drive.isBusy ? <Loader2 className="animate-spin" /> : <RefreshCw />}
                   Check again
                 </Button>

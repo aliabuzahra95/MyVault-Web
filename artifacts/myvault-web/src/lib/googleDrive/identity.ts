@@ -1,13 +1,10 @@
 import { createSingleFlight } from "@/lib/googleDrive/singleFlight";
+import { hasSufficientDriveScope } from "./driveScope";
+export { hasSufficientDriveScope } from "./driveScope";
 
 export const GOOGLE_DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly";
 export const GOOGLE_CLIENT_ID = import.meta.env?.VITE_GOOGLE_CLIENT_ID?.trim() ?? "";
 export const GOOGLE_IDENTITY_SCRIPT_SRC = "https://accounts.google.com/gsi/client";
-
-export function hasSufficientDriveScope(scope?: string | null): boolean {
-  if (!scope) return false;
-  return scope.includes("drive.readonly") || scope.includes("https://www.googleapis.com/auth/drive");
-}
 
 export type GoogleDriveToken = {
   accessToken: string;
@@ -86,7 +83,7 @@ function removeLegacyBrowserTokens() {
 export function getCachedGoogleDriveToken() {
   if (typeof window === "undefined") return null;
   removeLegacyBrowserTokens();
-  if (!cachedToken || cachedToken.expiresAt - Date.now() <= 60000) {
+  if (!cachedToken || cachedToken.expiresAt - Date.now() <= 60000 || !hasSufficientDriveScope(cachedToken.scope)) {
     cachedToken = null;
     return null;
   }
@@ -224,6 +221,13 @@ async function parseServerSession(response: Response) {
       payload,
     );
   }
+  if (!hasSufficientDriveScope(payload.scope)) {
+    clearCachedGoogleDriveToken();
+    throw new GoogleDriveAuthError(
+      "Google Drive permissions need to be updated to restore Android backups. Please connect again.",
+      "interaction-required",
+    );
+  }
   return {
     accessToken: payload.accessToken,
     expiresAt: payload.expiresAt,
@@ -243,13 +247,6 @@ async function restoreServerSession() {
     throw authErrorFrom(error, "Google Drive session could not be restored.");
   }
   const session = await parseServerSession(response);
-  if (!hasSufficientDriveScope(session.scope)) {
-    clearCachedGoogleDriveToken({ broadcast: true });
-    throw new GoogleDriveAuthError(
-      "Google Drive permissions need to be updated to restore Android backups. Please connect again.",
-      "interaction-required",
-    );
-  }
   return rememberGoogleDriveToken(session);
 }
 

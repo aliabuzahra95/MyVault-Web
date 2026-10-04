@@ -85,6 +85,27 @@ export async function runWebGraphRuntime() {
   check(empty.status === "ALREADY_CURRENT" && empty.metrics.payloadRows === 0 && store.creates.length === before, "Zero-change path did work");
   const emptyCapture = await captureWebGraphSnapshot(store.accountId, store.lineageId);
   check(emptyCapture.bundle === null && emptyCapture.payloadRowsRead === 0, "Empty capture read the whole bundle"); tests.push("zero-change capture and object-free backup");
+  {
+    const f = await newFixture();
+    const parent = (await loadWebGraphState(f.store.accountId, f.store.lineageId))!.published!;
+    const next = await f.store.append(parent, [{ file: "notes.json", key: ["n"], operation: "upsert", value: row("n", "Latest remote note") }]);
+    f.store.reads = [];
+    const behind = await f.workflow.backupStatus(next.commit.commitId);
+    check(!behind.current && behind.notice === null && behind.remoteCommitId === next.commit.commitId,
+      "A dismissed newer notice was incorrectly treated as current");
+    check(f.store.reads.length === 0, "Freshness inspection downloaded Vault payloads");
+    await f.workflow.restore();
+    check((await f.workflow.backupStatus()).current, "Applied tip was not recognized as current");
+    await saveLocalCreatedNote(overlay("n", "Local browser edit"));
+    const restored = await f.workflow.restore({ overwriteLocalChanges: true });
+    const bundle = await loadMetadataRestoreBundle();
+    const notes = bundle!.files.find((file) => file.fileName === "notes.json")!.json as Record<string, unknown>[];
+    check(restored.commitId === next.commit.commitId && notes.find((note) => note.id === "n")?.title === "Latest remote note",
+      "Explicit Restore stopped at the old checkpoint while claiming the latest tip");
+    check((await f.workflow.backupStatus()).current, "Explicit Restore did not reach the latest verified tip");
+    tests.push("dismissed newer notice is not current; explicit Restore replays checkpoint plus descendants");
+    setActiveGoogleAccount(store.accountId);
+  }
   await saveLocalCreatedNote(overlay("n", "Renamed العربية"));
   const one = await workflow.publish();
   check(one.metrics.deltasCreated === 1 && one.metrics.commitsCreated === 1 && one.metrics.binariesCreated === 0 && one.metrics.payloadRows === 1, "One-note writer work not bounded");

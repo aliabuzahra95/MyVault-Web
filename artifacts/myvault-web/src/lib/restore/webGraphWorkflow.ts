@@ -156,25 +156,39 @@ export class InternalWebGraphWorkflow {
 
   /** Commit metadata only. This never downloads Vault payloads or applies Restore. */
   async latestBackupNotice(lastNotifiedRemoteCommitId: string | null): Promise<WebLatestBackupNotice | null> {
+    return (await this.backupStatus(lastNotifiedRemoteCommitId)).notice;
+  }
+
+  async backupStatus(lastNotifiedRemoteCommitId: string | null = null) {
     checkAccount(this.store);
     const inventory = await this.store.commits();
     const graph = await BackupGraph.discover(inventory, this.store.accountId, this.store.lineageId);
+    const blocked = (status: Parameters<typeof decideLatestBackupNotice>[0]) => ({
+      current: false, remoteCommitId: null as string | null, commitObjectId: null as string | null,
+      notice: decideLatestBackupNotice(status, null, false, lastNotifiedRemoteCommitId),
+    });
     if (graph.status !== "SINGLE_TIP") {
-      return decideLatestBackupNotice(graph.status, graph.tips.length === 1 ? graph.tips[0] : null, false, lastNotifiedRemoteCommitId);
+      return blocked(graph.status);
     }
     const snapshot = await readWebGraphNoticeState(this.store.accountId, this.store.lineageId);
     if (snapshot.state?.trust === "INVALIDATED") {
-      return decideLatestBackupNotice("DIVERGENT", graph.tips[0], false, lastNotifiedRemoteCommitId);
+      return blocked("DIVERGENT");
     }
     let applied: WebGraphPosition | null;
     try {
       applied = materializedPosition(graph, inventory, snapshot.state);
     } catch {
-      return decideLatestBackupNotice("DIVERGENT", graph.tips[0], false, lastNotifiedRemoteCommitId);
+      return blocked("DIVERGENT");
     }
-    if (!applied) return null;
-    const plan = graph.plan(applied.commit.commitId);
-    return decideLatestBackupNotice(plan.status, graph.tips[0] ?? null, snapshot.pending, lastNotifiedRemoteCommitId);
+    const plan = graph.plan(applied?.commit.commitId ?? null);
+    const remoteCommitId = graph.tips[0];
+    let commitObjectId: string | null = null;
+    for (const object of inventory) {
+      if ((await parseGraphCommit(object)).commitId === remoteCommitId) commitObjectId = object.objectRef.cloudFileId;
+    }
+    checkAccount(this.store);
+    return { current: plan.status === "ALREADY_CURRENT", remoteCommitId, commitObjectId,
+      notice: applied ? decideLatestBackupNotice(plan.status, remoteCommitId, snapshot.pending, lastNotifiedRemoteCommitId) : null };
   }
 
   async publish(): Promise<WebGraphResult> {
@@ -351,7 +365,8 @@ export class InternalWebGraphWorkflow {
 
       const commitsToApply = targetCommits.length > 0
         ? targetCommits
-        : (lastCheckpointIdx >= 0 ? [plan.commits[lastCheckpointIdx]] : plan.commits.slice(-1));
+        // Explicitly replacing local edits must replay through the current tip.
+        : plan.commits.slice(Math.max(0, lastCheckpointIdx));
 
       snapshot = await captureWebGraphSnapshot(this.store.accountId, this.store.lineageId, true);
       requireSafe(snapshot.state || !snapshot.bundle || commitsToApply[0]?.kind === "checkpoint" || options?.overwriteLocalChanges, "Existing local Vault requires reconciliation before a first graph Restore.");

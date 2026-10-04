@@ -8,6 +8,14 @@ import { stageVerifiedMetadataRestore, sha256Blob, verifyDriveManifestFiles } fr
 import type { DriveSyncManifest, DriveSyncManifestEntry } from "../src/lib/restore/driveManifestPreview";
 import { representativeAndroidBackup } from "./fixtures/representative-android-backup";
 import { handleGoogleDriveAuthRequest } from "../../../api/_googleDriveSession";
+import { hasSufficientDriveScope } from "../src/lib/googleDrive/driveScope";
+
+assert.equal(hasSufficientDriveScope("https://www.googleapis.com/auth/drive.file"), false);
+assert.equal(hasSufficientDriveScope("https://www.googleapis.com/auth/drive.metadata.readonly"), false);
+assert.equal(hasSufficientDriveScope(undefined), false);
+assert.equal(hasSufficientDriveScope("https://www.googleapis.com/auth/drive.readonly.extra"), false);
+assert.equal(hasSufficientDriveScope("https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly"), true);
+assert.equal(hasSufficientDriveScope("https://www.googleapis.com/auth/drive"), true);
 
 const originalFetch = globalThis.fetch;
 const originalEnvironment = {

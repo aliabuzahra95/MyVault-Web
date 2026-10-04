@@ -4,10 +4,10 @@ import type { WebGraphTransport } from "../restore/webGraphWorkflow";
 import { assertGoogleDriveSession, type VerifiedGoogleDriveSession } from "./accountSession";
 import { listNamedDriveFolders, GoogleDriveRequestError, type MyVaultDriveScan } from "./driveClient";
 
-type GraphFile = { id: string; name: string; parents?: string[]; size?: string; sha256Checksum?: string; mimeType?: string; trashed?: boolean };
+type GraphFile = { id: string; name: string; parents?: string[]; size?: string; sha256Checksum?: string; mimeType?: string; trashed?: boolean; modifiedTime?: string };
 export type VerifiedGraphLayout = { rootId: string; lineageId: string; checkpoints: string; commits: string; deltas: string; binaries: string };
 const API = "https://www.googleapis.com/drive/v3";
-const fields = "id,name,parents,size,sha256Checksum,mimeType,trashed";
+const fields = "id,name,parents,size,sha256Checksum,mimeType,trashed,modifiedTime";
 const quote = (value: string) => value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
 
 /** Read-only safety barrier: visible graph data must never be overwritten by the legacy writer. */
@@ -21,6 +21,7 @@ export class GoogleDriveWebGraphTransport implements WebGraphTransport {
   readonly accountId: string;
   readonly lineageId: string;
   private readonly verifiedCommits = new Map<string, GraphObject>();
+  private readonly commitModifiedTimes = new Map<string, string>();
   constructor(private readonly session: VerifiedGoogleDriveSession, private readonly layout: VerifiedGraphLayout) {
     this.accountId = session.accountId; this.lineageId = layout.lineageId;
   }
@@ -57,8 +58,10 @@ export class GoogleDriveWebGraphTransport implements WebGraphTransport {
   }
   assertAccount() { assertGoogleDriveSession(this.session.token, this.accountId); }
   get rootId() { return this.layout.rootId; }
-  previewScan(): MyVaultDriveScan {
+  previewScan(status?: { current: boolean; remoteCommitId: string | null; commitObjectId: string | null }): MyVaultDriveScan {
     return { scannedAt: new Date().toISOString(), rootFolder: { id: this.rootId, name: BACKUP_GRAPH_NAMESPACE },
+      ...(status ? { verifiedGraph: { commitId: status.remoteCommitId, current: status.current,
+        modifiedTime: status.commitObjectId ? this.commitModifiedTimes.get(status.commitObjectId) ?? null : null } } : {}),
       folders: { metadata: null, files: null, manifests: null, backups: null }, manifestFile: null, ready: true, missingPaths: [] };
   }
   private async request(url: string, init: RequestInit = {}) {
@@ -104,6 +107,8 @@ export class GoogleDriveWebGraphTransport implements WebGraphTransport {
         || file.trashed || file.mimeType === "application/vnd.google-apps.folder"
         || file.parents?.length !== 1 || file.parents[0] !== this.layout.commits) throw new Error("Invalid graph commit object receipt.");
       present.add(file.id);
+      if (file.modifiedTime) this.commitModifiedTimes.set(file.id, file.modifiedTime);
+      else this.commitModifiedTimes.delete(file.id);
       const cached = this.verifiedCommits.get(file.id);
       // A fresh provider inventory is still required. Cached bytes can only be
       // reused when Drive's current cryptographic digest and exact size agree.
@@ -116,7 +121,9 @@ export class GoogleDriveWebGraphTransport implements WebGraphTransport {
       this.verifiedCommits.set(file.id, { objectRef, bytes: bytes.slice() });
       result.push({ bytes, objectRef });
     }
-    for (const id of this.verifiedCommits.keys()) if (!present.has(id)) this.verifiedCommits.delete(id);
+    for (const id of this.verifiedCommits.keys()) if (!present.has(id)) {
+      this.verifiedCommits.delete(id); this.commitModifiedTimes.delete(id);
+    }
     return result;
   }
   async reserveIds(count: number): Promise<string[]> {
