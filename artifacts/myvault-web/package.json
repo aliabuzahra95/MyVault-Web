@@ -11,6 +11,7 @@
     "verify:workspace": "tsx scripts/verify-islamic-corpus-projection.ts",
     "verify:sync": "tsx scripts/verify-safe-sync-contract.ts",
     "verify:drive-auth": "tsx scripts/verify-drive-auth-restore.ts",
+    "verify:drive-ui": "node scripts/verify-drive-connection-race.mjs",
     "verify:graph-runtime": "node scripts/verify-web-graph-runtime.mjs",
     "verify:graph-drive": "node scripts/verify-web-graph-drive.mjs",
     "verify:latest-backup": "tsx scripts/verify-latest-backup-notice.ts",
