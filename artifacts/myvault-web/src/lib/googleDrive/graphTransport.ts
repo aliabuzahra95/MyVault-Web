@@ -141,7 +141,8 @@ export class GoogleDriveWebGraphTransport implements WebGraphTransport {
     if (!metadata.ok) throw new GoogleDriveRequestError(`Graph object lookup failed (${metadata.status}).`, metadata.status);
     const file = await metadata.json() as GraphFile;
     const allowed = [this.layout.checkpoints, this.layout.deltas, this.layout.commits, this.layout.binaries];
-    if (file.trashed || file.mimeType === "application/vnd.google-apps.folder"
+    if (file.trashed) throw new Error(`A required backup file is in Google Drive's trash (${id}). Restore cannot verify its bytes. Nothing in Drive was changed.`);
+    if (file.mimeType === "application/vnd.google-apps.folder"
       || file.parents?.length !== 1 || !allowed.includes(file.parents[0])) throw new Error("Graph read is outside the enrolled namespace.");
     const response = await this.request(`${API}/files/${encodeURIComponent(id)}?alt=media`);
     if (!response.ok) throw new GoogleDriveRequestError(`Graph object download failed (${response.status}).`, response.status);

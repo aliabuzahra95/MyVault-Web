@@ -15,6 +15,7 @@ import { getActiveAccountId, withAccountSyncLock } from "../sync/accountContext"
 import { withLocalVaultUpdate } from "../sync/editorLease";
 import { validateSyncCandidate } from "../sync/validateSyncCandidate";
 import { decideLatestBackupNotice, type WebLatestBackupNotice } from "./latestBackupNotice";
+import { loadLocalAttachmentBlob } from "./localRestoreStore";
 
 export const WEB_GRAPH_RESTORE_ENABLED = true;
 export type WebGraphTransport = {
@@ -371,6 +372,10 @@ export class InternalWebGraphWorkflow {
       snapshot = await captureWebGraphSnapshot(this.store.accountId, this.store.lineageId, true);
       requireSafe(snapshot.state || !snapshot.bundle || commitsToApply[0]?.kind === "checkpoint" || options?.overwriteLocalChanges, "Existing local Vault requires reconciliation before a first graph Restore.");
 
+      if (options?.overwriteLocalChanges) {
+        return this.restoreVerifiedRange(snapshot, commitsToApply, inventory);
+      }
+
       for (const commit of commitsToApply) {
         checkAccount(this.store);
         if (!options?.overwriteLocalChanges) {
@@ -431,12 +436,86 @@ export class InternalWebGraphWorkflow {
     });
   }
 
+  private async restoreVerifiedRange(snapshot: WebGraphSnapshot, commits: BackupGraphCommit[], inventory: GraphObject[]): Promise<WebGraphResult> {
+    const opId = crypto.randomUUID();
+    const staged: StagedGraphObject[] = [];
+    const receipts = new Map<string, GraphObject>();
+    for (const source of inventory) receipts.set((await parseGraphCommit(source)).commitId, source);
+    const deletions = new Map<string, BackupRecordChange>();
+    let bundle = snapshot.bundle;
+    let previous: BackupGraphCommit | undefined;
+    for (const commit of commits) {
+      checkAccount(this.store);
+      if (commit.kind === "checkpoint") {
+        const checkpoint = await readBackupGraphCheckpoint(commit.checkpoint, async (id) => {
+          const bytes = await this.store.read(id); checkAccount(this.store);
+          requireSafe(bytes, "Checkpoint object missing."); return bytes;
+        });
+        for (const source of checkpoint.objects) staged.push(await object(this.store, opId, source.objectRef.cloudFileId,
+          source.objectRef.cloudFileId === commit.checkpoint.cloudFileId ? "checkpoint" : "metadata", source.bytes));
+        deletions.clear();
+        bundle = bundleOf(checkpoint.files, checkpoint.binaries, checkpoint.cloudVersion, [], commit.checkpoint.checkpointId);
+      } else {
+        const parentReceipt = receipts.get(commit.parents[0].commitId);
+        const parent = previous ?? (parentReceipt ? await parseGraphCommit(parentReceipt) : undefined);
+        requireSafe(bundle && parent && parent.commitId === commit.parents[0].commitId, "Missing verified materialized parent.");
+        const bytes = await requiredBytes(this.store, commit.delta!);
+        const delta = parseBackupDelta(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)));
+        requireSafe(delta.deltaId === commit.delta!.deltaId && delta.parentId === commit.delta!.parentId
+          && delta.checkpointId === commit.checkpoint.checkpointId
+          && (delta.version !== 2 || commit.requiredReaders.includes(BACKUP_BINARY_READER_CAPABILITY)), "Delta ancestry/capability mismatch.");
+        staged.push(await object(this.store, opId, commit.delta!.cloudFileId, "delta", bytes));
+        const rebuilt = applyDelta(bundle, delta, parent);
+        for (const change of delta.changes) {
+          const key = JSON.stringify([change.file, change.key]);
+          if (change.operation === "delete") deletions.set(key, change); else deletions.delete(key);
+        }
+        bundle = bundleOf(rebuilt.files, rebuilt.binaries, bundle.cloudVersion + 1, [...deletions.values()], delta.deltaId);
+      }
+      const source = receipts.get(commit.commitId);
+      requireSafe(source && (await parseGraphCommit(source)).commitId === commit.commitId, "Commit object receipt missing.");
+      staged.push(await object(this.store, opId, source.objectRef.cloudFileId, "commit", source.bytes));
+      previous = commit;
+    }
+    requireSafe(bundle && previous, "No verified Restore state.");
+    // Historical descriptors remain verified metadata, but only live final bytes are
+    // needed. Never read a replaced/deleted binary merely to replay an old commit.
+    const destinations: Record<string, string> = {};
+    for (const binary of checkpointBinaryDescriptors(bundle.fileEntries ?? [])) {
+      let cached = await loadLocalAttachmentBlob(binary.attachmentId);
+      if (cached) try { await verifyBackupBinaryBlob(cached, binary); } catch { cached = null; }
+      const bytes = cached ? new Uint8Array(await cached.arrayBuffer()) : await requiredBytes(this.store, binary);
+      await verifyBackupBinaryBlob(new Blob([new Uint8Array(bytes)]), binary);
+      const existing = staged.find((o) => o.objectRef.cloudFileId === binary.cloudFileId);
+      if (existing) requireSafe(existing.role === "binary" && existing.objectRef.sha256 === binary.sha256
+        && existing.objectRef.size === binary.size, "Conflicting shared binary identity.");
+      else staged.push(await object(this.store, opId, binary.cloudFileId, "binary", bytes));
+      destinations[binary.attachmentId] = binary.cloudFileId;
+      await this.boundary("during-restore-binary-staging");
+    }
+    const finalReceipt = receipts.get(previous.commitId)!;
+    const op: WebGraphOperation = { operationId: opId, accountId: this.store.accountId, lineageId: this.store.lineageId,
+      kind: "restore", generation: snapshot.generation, originalState: snapshot.state,
+      next: { commit: previous, objectRef: finalReceipt.objectRef }, bundle, capturedOperations: [], overlays: [],
+      objectIds: staged.map((o) => o.objectRef.cloudFileId), binaryDestinations: destinations, status: "STAGED",
+      overwriteLocalChanges: true, verifiedRestorePath: commits.map((c) => c.commitId) };
+    await stageWebGraphOperation(op, staged); await this.boundary("after-restore-stage");
+    await this.recoverRestore(op);
+    return { status: "COMPLETE", commitId: previous.commitId, metrics: emptyMetrics() };
+  }
+
   private async recoverRestore(op: WebGraphOperation) {
     checkAccount(this.store); requireSafe(op.lineageId === this.store.lineageId, "Foreign Restore lineage.");
     const { graph, inventory } = await discovery(this.store);
     const original = materializedPosition(graph, inventory, op.originalState);
     const plan = graph.plan(original?.commit.commitId ?? null);
-    requireSafe(plan.descendants[0]?.commitId === op.next.commit.commitId || op.next.commit.kind === "checkpoint", "Frozen Restore commit is not the next safe linear descendant.");
+    if (op.verifiedRestorePath) {
+      requireSafe(op.overwriteLocalChanges && op.verifiedRestorePath.length > 0
+        && op.verifiedRestorePath.at(-1) === op.next.commit.commitId, "Invalid verified Restore path.");
+      const checkpoint = plan.commits.findLastIndex((c) => c.kind === "checkpoint");
+      const path = plan.requiresCheckpoint || !plan.descendants.length ? plan.commits.slice(Math.max(0, checkpoint)) : plan.descendants;
+      requireSafe(canonicalJson(op.verifiedRestorePath) === canonicalJson(path.slice(0, path.findIndex((c) => c.commitId === op.next.commit.commitId) + 1).map((c) => c.commitId)), "Frozen Restore path differs from verified ancestry.");
+    } else requireSafe(plan.descendants[0]?.commitId === op.next.commit.commitId || op.next.commit.kind === "checkpoint", "Frozen Restore commit is not the next safe linear descendant.");
     exactPosition(graph, inventory, op.next);
     const objects = await loadStagedGraphObjects(this.store.accountId, op);
     for (const staged of objects) {

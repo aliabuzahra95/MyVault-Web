@@ -37,6 +37,7 @@ export type WebGraphOperation = {
   objectIds: string[]; binaryDestinations: Record<string, string>;
   status: "STAGED" | "COMPLETE";
   overwriteLocalChanges?: boolean;
+  verifiedRestorePath?: string[];
 };
 function current(accountId: string) {
   if (getActiveAccountId() !== accountId) throw new Error("The Google account changed. Local data was preserved.");

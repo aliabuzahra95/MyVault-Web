@@ -106,6 +106,48 @@ export async function runWebGraphRuntime() {
     tests.push("dismissed newer notice is not current; explicit Restore replays checkpoint plus descendants");
     setActiveGoogleAccount(store.accountId);
   }
+  for (const mode of ["replacement", "delete", "required-missing"] as const) {
+    const f = await newFixture();
+    const parent = (await loadWebGraphState(f.store.accountId, f.store.lineageId))!.published!;
+    const obsoleteId = (await f.store.reserveIds(1))[0];
+    const obsoleteBytes = new Uint8Array(8192).fill(66);
+    const middle = await f.store.append(parent, [{ file: "attachments.json", key: ["pdf"], operation: "upsert",
+      value: { id: "pdf", fileName: "test.pdf", noteId: null, libraryFolderId: null,
+        mimeType: "application/pdf", sizeBytes: 8192, createdAt: 50, fileEntry: "files/pdf" } }],
+      [{ attachmentId: "pdf", cloudFileId: obsoleteId, sha256: await backupBytesSha256(obsoleteBytes), size: 8192 }]);
+    // The old immutable PDF is in trash/unavailable, but a later verified commit
+    // explicitly retires it. Restore must not need those historical bytes.
+    const finalId = (await f.store.reserveIds(1))[0];
+    const finalBytes = new Uint8Array(12288).fill(67);
+    if (mode !== "required-missing") f.store.data.set(finalId, { role: "binary", bytes: finalBytes });
+    const latest = await f.store.append(middle, mode === "delete"
+      ? [{ file: "attachments.json", key: ["pdf"], operation: "delete" }]
+      : [{ file: "attachments.json", key: ["pdf"], operation: "upsert", value: { id: "pdf", fileName: "test.pdf",
+        noteId: null, libraryFolderId: null, mimeType: "application/pdf", sizeBytes: 12288, createdAt: 50, fileEntry: "files/pdf" } }],
+      mode === "delete" ? [] : [{ attachmentId: "pdf", cloudFileId: finalId, sha256: await backupBytesSha256(finalBytes), size: 12288 }]);
+    f.store.reads = [];
+    if (mode === "required-missing") {
+      await rejects(() => f.workflow.restore({ overwriteLocalChanges: true }), "A missing final binary was accepted");
+      check((await loadWebGraphState(f.store.accountId, f.store.lineageId))!.applied === null,
+        "Failed final verification advanced the Restore cursor");
+    } else {
+      let interrupted = false;
+      const restore = new InternalWebGraphWorkflow(f.store, async (phase) => {
+        if (phase === "after-restore-stage" && !interrupted) { interrupted = true; throw new Error("Restart range Restore"); }
+      });
+      await rejects(() => restore.restore({ overwriteLocalChanges: true }), "Range recovery was not staged");
+      await f.workflow.restore({ overwriteLocalChanges: true });
+      check((await loadWebGraphState(f.store.accountId, f.store.lineageId))!.applied?.commit.commitId === latest.commit.commitId,
+        "Verified range did not reach the latest tip after restart");
+      const restored = await loadMetadataRestoreBundle();
+      check((restored!.fileEntries ?? []).some((e) => e.backupEntry === "files/pdf") === (mode !== "delete"),
+        "Final explicit deletion/replacement state is wrong");
+      if (mode === "replacement") check((await loadLocalAttachmentBlob("pdf"))?.size === 12288, "Wrong replacement bytes applied");
+    }
+    check(!f.store.reads.includes(obsoleteId), "Restore downloaded a retired historical PDF");
+    tests.push(`manual Restore ${mode}: final binary verification, no retired-byte reads`);
+    setActiveGoogleAccount(store.accountId);
+  }
   await saveLocalCreatedNote(overlay("n", "Renamed العربية"));
   const one = await workflow.publish();
   check(one.metrics.deltasCreated === 1 && one.metrics.commitsCreated === 1 && one.metrics.binariesCreated === 0 && one.metrics.payloadRows === 1, "One-note writer work not bounded");
