@@ -59,7 +59,7 @@ function applyDelta(bundle: MetadataRestoreBundle, delta: BackupDelta, expectedP
   resolution.apply(delta.changes, delta.binaries ?? []);
   return { files, binaries: resolution.finish(files), permanentDeletions: delta.changes.filter((c) => c.operation === "delete") };
 }
-function bundleOf(files: Record<string, unknown>, binaries: BackupBinaryDescriptor[], cloudVersion: number, permanentDeletions: BackupRecordChange[], headId: string): MetadataRestoreBundle {
+function bundleOf(files: Record<string, unknown>, binaries: BackupBinaryDescriptor[], cloudVersion: number, permanentDeletions: BackupRecordChange[], headId: string, validateRelationships = true): MetadataRestoreBundle {
   const entries = [...Object.keys(files).map((fileName) => ({ path: `metadata/${fileName}`, fileName, backupEntry: fileName,
     kind: "metadata" as const, cloudFileId: "graph-logical-metadata", sha256: "", size: 0, updatedAt: null })), ...binaries.map(binaryManifestEntry)];
   const manifest = { schemaVersion: 1, storage: "google-drive-api", cloudVersion, entries } as DriveSyncManifest;
@@ -67,8 +67,10 @@ function bundleOf(files: Record<string, unknown>, binaries: BackupBinaryDescript
   requireSafe(!bundle.issues.length, bundle.issues[0] ?? "Invalid graph metadata bundle.");
   const result: MetadataRestoreBundle = { ...bundle, fileEntries: binaries.map(binaryManifestEntry), binaryDescriptorsVerified: true,
     incrementalBackupState: { headId, permanentDeletions } };
-  const validation = validateSyncCandidate(result);
-  requireSafe(validation.valid, validation.issues[0] ?? "The graph candidate contains invalid record relationships.");
+  if (validateRelationships) {
+    const validation = validateSyncCandidate(result);
+    requireSafe(validation.valid, validation.issues[0] ?? "The graph candidate contains invalid record relationships.");
+  }
   return result;
 }
 function exactPosition(graph: BackupGraph, inventory: GraphObject[], position: WebGraphPosition) {
@@ -454,7 +456,7 @@ export class InternalWebGraphWorkflow {
         for (const source of checkpoint.objects) staged.push(await object(this.store, opId, source.objectRef.cloudFileId,
           source.objectRef.cloudFileId === commit.checkpoint.cloudFileId ? "checkpoint" : "metadata", source.bytes));
         deletions.clear();
-        bundle = bundleOf(checkpoint.files, checkpoint.binaries, checkpoint.cloudVersion, [], commit.checkpoint.checkpointId);
+        bundle = bundleOf(checkpoint.files, checkpoint.binaries, checkpoint.cloudVersion, [], commit.checkpoint.checkpointId, false);
       } else {
         const parentReceipt = receipts.get(commit.parents[0].commitId);
         const parent = previous ?? (parentReceipt ? await parseGraphCommit(parentReceipt) : undefined);
@@ -470,7 +472,7 @@ export class InternalWebGraphWorkflow {
           const key = JSON.stringify([change.file, change.key]);
           if (change.operation === "delete") deletions.set(key, change); else deletions.delete(key);
         }
-        bundle = bundleOf(rebuilt.files, rebuilt.binaries, bundle.cloudVersion + 1, [...deletions.values()], delta.deltaId);
+        bundle = bundleOf(rebuilt.files, rebuilt.binaries, bundle.cloudVersion + 1, [...deletions.values()], delta.deltaId, false);
       }
       const source = receipts.get(commit.commitId);
       requireSafe(source && (await parseGraphCommit(source)).commitId === commit.commitId, "Commit object receipt missing.");
@@ -478,6 +480,8 @@ export class InternalWebGraphWorkflow {
       previous = commit;
     }
     requireSafe(bundle && previous, "No verified Restore state.");
+    const validation = validateSyncCandidate(bundle);
+    requireSafe(validation.valid, validation.issues[0] ?? "The final graph candidate contains invalid record relationships.");
     // Historical descriptors remain verified metadata, but only live final bytes are
     // needed. Never read a replaced/deleted binary merely to replay an old commit.
     const destinations: Record<string, string> = {};

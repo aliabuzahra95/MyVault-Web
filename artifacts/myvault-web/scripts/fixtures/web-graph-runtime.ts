@@ -148,6 +148,26 @@ export async function runWebGraphRuntime() {
     tests.push(`manual Restore ${mode}: final binary verification, no retired-byte reads`);
     setActiveGoogleAccount(store.accountId);
   }
+  for (const resolved of [true, false]) {
+    const f = await newFixture();
+    const parent = (await loadWebGraphState(f.store.accountId, f.store.lineageId))!.published!;
+    const middle = await f.store.append(parent, [{ file: "notes.json", key: ["n"], operation: "upsert",
+      value: { ...row("n", "Historical reference"), folderId: "later-folder" } }]);
+    const latest = resolved ? await f.store.append(middle, [{ file: "folders.json", key: ["later-folder"], operation: "upsert",
+      value: { id: "later-folder", parentId: null, name: "Restored folder", orderIndex: 0, isFavourite: false,
+        createdAt: 50, updatedAt: 100 } }]) : middle;
+    if (resolved) {
+      await f.workflow.restore({ overwriteLocalChanges: true });
+      check((await loadWebGraphState(f.store.accountId, f.store.lineageId))!.applied?.commit.commitId === latest.commit.commitId,
+        "A reference resolved by later metadata blocked final Restore");
+    } else {
+      await rejects(() => f.workflow.restore({ overwriteLocalChanges: true }), "Invalid final relationships were accepted");
+      check((await loadWebGraphState(f.store.accountId, f.store.lineageId))!.applied === null,
+        "Invalid final relationships advanced the cursor");
+    }
+    tests.push(`final relationship validation: ${resolved ? "later reference resolved" : "missing reference blocks"}`);
+    setActiveGoogleAccount(store.accountId);
+  }
   await saveLocalCreatedNote(overlay("n", "Renamed العربية"));
   const one = await workflow.publish();
   check(one.metrics.deltasCreated === 1 && one.metrics.commitsCreated === 1 && one.metrics.binariesCreated === 0 && one.metrics.payloadRows === 1, "One-note writer work not bounded");
