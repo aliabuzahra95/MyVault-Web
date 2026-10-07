@@ -11,6 +11,7 @@ import { saveLocalCreatedNote, saveLocalCreatedAttachment, saveLocalAttachmentBl
 import { setActiveGoogleAccount, getActiveAccountId, accountStorageKey } from "../../src/lib/sync/accountContext";
 import { acquireNoteEditorLease } from "../../src/lib/sync/editorLease";
 import { verifyGraphTransportContracts } from "./web-graph-transport";
+import { validateSyncCandidate } from "../../src/lib/sync/validateSyncCandidate";
 
 function check(value: unknown, message: string): asserts value { if (!value) throw new Error(message); }
 async function rejects(work: () => Promise<unknown>, message: string) {
@@ -72,6 +73,18 @@ async function fixture(accountId: string) {
 export async function runWebGraphRuntime() {
   const tests: string[] = []; let fixtureNumber = 0;
   const newFixture = () => fixture(`graph-runtime-${++fixtureNumber}`);
+  {
+    const bundle = createInitialMetadataRestoreBundle(50);
+    bundle.files.find((f) => f.fileName === "notes.json")!.json = [row("owner", "Attachment owner")];
+    const file = bundle.files.find((f) => f.fileName === "attachments.json")!;
+    for (const noteId of ["", "owner", "missing-owner"]) {
+      file.json = [{ id: "orphan-folder-pdf", fileName: "test.pdf", noteId, libraryFolderId: "historical-folder",
+        mimeType: "application/pdf", sizeBytes: 10, createdAt: 50 }];
+      check(validateSyncCandidate(bundle).valid === (noteId !== "missing-owner"),
+        "Attachment ownership differs from Android's either-owner/standalone rule");
+    }
+    tests.push("Android attachment owner compatibility; invalid non-standalone owner still blocks");
+  }
   check(!BACKUP_GRAPH_PUBLICATION_ENABLED && !INCREMENTAL_BACKUP_PUBLICATION_ENABLED && WEB_GRAPH_RESTORE_ENABLED,
     "Only the coordinated graph Restore route may be enabled on Web");
   tests.push("Web publication disabled; coordinated graph Restore enabled");

@@ -138,8 +138,11 @@ export function validateSyncCandidate(bundle: MetadataRestoreBundle) {
   attachments.forEach((row) => {
     const noteId = stringValue(row, "noteId");
     const folderId = stringValue(row, "libraryFolderId");
-    if (noteId && !noteIds.has(noteId)) issues.push(`Attachment ${stringValue(row, "id")} refers to missing note ${noteId}.`);
-    if (folderId && !folderIds.has(folderId)) issues.push(`Attachment ${stringValue(row, "id")} refers to missing folder ${folderId}.`);
+    // Match Android BackupRepository: either owner is sufficient, and standalone
+    // attachments have an empty noteId. Preserve historical folder IDs verbatim.
+    if (noteId && !noteIds.has(noteId) && !(folderId && folderIds.has(folderId))) {
+      issues.push(`Attachment ${stringValue(row, "id")} has no matching note or library folder.`);
+    }
   });
   annotations.forEach((row) => {
     const attachmentId = stringValue(row, "attachmentId");
